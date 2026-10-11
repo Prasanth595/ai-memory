@@ -17,8 +17,19 @@ ARCHIVE_POINTER = (
     "\nOlder released versions are archived under "
     "[docs/changelog/](docs/changelog/README.md).\n"
 )
+ARCHIVE_POINTER_LINE = ARCHIVE_POINTER.strip()
 
 DEFAULT_KEEP_RELEASED = 2
+
+
+def _strip_archive_pointer(versions_text: str) -> str:
+    """Remove the rolling-window archive pointer from the versions block."""
+    marker = ARCHIVE_POINTER_LINE
+    if marker not in versions_text:
+        return versions_text
+    without = versions_text.replace(ARCHIVE_POINTER, "\n")
+    without = without.replace(marker + "\n", "\n").replace(marker, "")
+    return without.rstrip("\n") + ("\n" if without else "")
 
 
 def parse_changelog(text: str) -> tuple[str, str, list[tuple[str, str]], str]:
@@ -49,6 +60,8 @@ def parse_changelog(text: str) -> tuple[str, str, list[tuple[str, str]], str]:
         footer = ""
         if versions_only and not versions_only.endswith("\n"):
             versions_only += "\n"
+
+    versions_only = _strip_archive_pointer(versions_only)
 
     sections: list[tuple[str, str]] = []
     matches = list(VERSION_HEADING.finditer(versions_only))

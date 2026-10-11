@@ -425,6 +425,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#1157)
 
 Older released versions are archived under [docs/changelog/](docs/changelog/README.md).
+
 [Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v2.6.3...HEAD
 [2.6.3]: https://github.com/akitaonrails/ai-memory/compare/v2.6.2...v2.6.3
 [2.6.2]: https://github.com/akitaonrails/ai-memory/compare/v2.6.1...v2.6.2

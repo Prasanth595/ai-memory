@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from changelog_lib import (  # noqa: E402
+    ARCHIVE_POINTER_LINE,
     migrate_to_archive,
     parse_changelog,
     rebuild_changelog,
@@ -82,6 +83,15 @@ class ChangelogLibTests(unittest.TestCase):
             self.assertEqual(n, 1)
             self.assertTrue((archive / "1.1.0.md").is_file())
             self.assertNotIn("## [1.1.0]", changelog.read_text())
+
+    def test_archive_pointer_not_in_released_section(self) -> None:
+        text = SAMPLE.replace(
+            "\n[Unreleased]:",
+            f"\n{ARCHIVE_POINTER_LINE}\n\n[Unreleased]:",
+        )
+        _, _, sections, _ = parse_changelog(text)
+        for version, chunk in sections:
+            self.assertNotIn("Older released versions", chunk, version)
 
     def test_rebuild_preserves_compare_order(self) -> None:
         _, unreleased, sections, footer = parse_changelog(SAMPLE)
