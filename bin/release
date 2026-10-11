@@ -12,8 +12,8 @@
 #      not block a release; the operator reviews the output).
 #   4. Updates [workspace.package] version in Cargo.toml.
 #   5. Moves CHANGELOG.md [Unreleased] entries to a new [X.Y.Z] section
-#      dated today.
-#   6. Commits both files as "release: vX.Y.Z".
+#      dated today, then rotates older releases into docs/changelog/.
+#   6. Commits release files as "release: vX.Y.Z".
 #   7. Creates an annotated git tag vX.Y.Z whose message is the changelog
 #      entry for this version.
 #   8. Prints next-step instructions: push the commit + tag, then deploy.
@@ -169,10 +169,13 @@ path.write_text(new_text)
 print("  moved [Unreleased] entries to [$VERSION] - $TODAY")
 PYEOF
 
+echo "==> Rotating older CHANGELOG releases into docs/changelog/"
+python3 "$REPO_ROOT/scripts/changelog_lib.py" rotate
+
 # ── commit + tag ───────────────────────────────────────────────────────────
 
 echo "==> Committing release files"
-git add "$CARGO_TOML" "$CHANGELOG" Cargo.lock
+git add "$CARGO_TOML" "$CHANGELOG" Cargo.lock docs/changelog/
 git commit -m "release: ${TAG}"
 
 echo "==> Extracting changelog entry for tag message"

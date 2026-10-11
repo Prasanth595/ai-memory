@@ -553,7 +553,9 @@ Additional boundary rules:
   README/docs references in the same commit. Internal refactors and
   test-only churn are exempt. CI rejects a duplicated heading
   (`scripts/check-changelog-sections.sh`) and any edit to an already
-  released section (`scripts/check-changelog-frozen.sh`).
+  released section (`scripts/check-changelog-frozen.sh`). Rolling window,
+  per-version archive under `docs/changelog/`, and release-time rotation:
+  see [`CONTRIBUTING.md`](CONTRIBUTING.md) ("CHANGELOG is a merge gate").
 - **Run the humanizer on new or heavily edited prose.** New documentation,
   and any large rewrite of existing text (a new doc section, a rewritten guide,
   a long CHANGELOG entry, an RFC or design note), goes through the `humanizer`

@@ -417,7 +417,8 @@ header or a request body.
   those versions.
 - The minimum server is 2.7.0, the release that adds conditional writes
   and deletes (`expected_page_id`, `create_only`) and the version id on page
-  reads (`CHANGELOG.md`, `[Unreleased]` on `release/2.7`). `GET /identity` and
+  reads (root `CHANGELOG.md` `[Unreleased]` on `release/2.7`; older server
+  release notes live under `docs/changelog/{version}.md`). `GET /identity` and
   incremental `recent` shipped in 2.6.0. A floor below the precondition seam
   would let an older server ignore `expectedPageId` as an unknown argument and
   turn a guarded write into an unconditional one, which is why wikisync
@@ -667,8 +668,9 @@ shipped caller outside this repository.
 the newest tested server version. The integration job always tests against
 the server built from the same commit, so the newest tested version is the
 current branch. `CHANGELOG.md` in the package follows Keep a Changelog, like
-the root changelog. SDK changes do not add entries to the root `CHANGELOG.md`
-unless they also change the server.
+the root changelog (`[Unreleased]` plus a short rolling window; older root
+releases are archived per version under `docs/changelog/`). SDK changes do not
+add entries to the root `CHANGELOG.md` unless they also change the server.
 
 ### 6.3 How server changes reach the SDK
 

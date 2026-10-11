@@ -120,6 +120,46 @@ checkbox for it. Follow the existing entry style (past-tense summary,
 trailing `([#NNN])` PR/issue reference) and place it under the right
 `### Added` / `### Changed` / `### Fixed` heading.
 
+To print only `[Unreleased]` for style reference (without attaching the full
+file): `scripts/changelog-unreleased.sh`.
+
+### Active changelog and archive layout
+
+The root [`CHANGELOG.md`](CHANGELOG.md) stays small on purpose:
+
+- **`## [Unreleased]`** — the **only** place contributors add bullets.
+- **Rolling window** — the two most recent **released** versions remain in
+  `CHANGELOG.md` for quick context and compare links.
+- **Archive** — older releases live as one immutable file per version under
+  [`docs/changelog/{version}.md`](docs/changelog/) (semver without a `v`
+  prefix, e.g. `2.6.1.md`). The [archive index](docs/changelog/README.md)
+  lists every file.
+
+Do **not** `@` or attach the whole `CHANGELOG.md` when you only need release
+history; read one archived file, `git show vX.Y.Z`, or the GitHub release.
+
+### Rotation (release operator only)
+
+`bin/release` cuts a version, then **rotates** automatically:
+
+1. `[Unreleased]` becomes `## [X.Y.Z] - <date>`.
+2. While more than two released sections remain in `CHANGELOG.md`, the
+   **oldest** section is written to `docs/changelog/X.Y.Z.md` (fails if that
+   file already exists), removed from `CHANGELOG.md`, and its compare link is
+   dropped from the footer.
+3. `docs/changelog/README.md` is refreshed.
+
+Contributors **never** rotate in feature PRs; only the release script moves
+history into the archive.
+
+### Frozen released text
+
+Released sections still in `CHANGELOG.md` and every file under
+`docs/changelog/` are **frozen** after they land on the default branch.
+CI (`scripts/check-changelog-frozen.sh`) rejects edits to existing archive
+files and to released portions of the active changelog. Typos in archived
+releases need an explicit maintainer ack, not a drive-by fix in a feature PR.
+
 ## Workflow rules (condensed from AGENTS.md)
 
 The full rules are in [`AGENTS.md`](AGENTS.md), the single

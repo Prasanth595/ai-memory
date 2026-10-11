@@ -36,7 +36,9 @@
 - [ ] I added a `CHANGELOG.md` `[Unreleased]` entry. It is **required** for any
       user-facing change: new flag / env var / endpoint / MCP tool / marker
       key, changed behaviour, or an observable bug fix. (Exempt only for
-      internal refactors, dead-code removal, and test-only churn.)
+      internal refactors, dead-code removal, and test-only churn.) See
+      [CONTRIBUTING.md — CHANGELOG](https://github.com/akitaonrails/ai-memory/blob/main/CONTRIBUTING.md#changelog-is-a-merge-gate)
+      for the rolling window, `docs/changelog/` archive, and rotation rules.
 - [ ] Any changed **default** (flag behaviour, config default, env var,
       response shape) is called out explicitly in "What changed" above.
 

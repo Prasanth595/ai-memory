@@ -1,0 +1,5 @@
+# Capture-only marker for the ai-memory repository checkout.
+# Scope resolution uses the default remote-derived project name.
+
+[capture]
+ignore_paths = ["CHANGELOG.md", "docs/changelog/**"]
