@@ -107,7 +107,19 @@ fn native_hook_accepts_plain_and_bom_prefixed_json() {
             "stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(spooled_body(tmp.path()).as_bytes(), payload);
+        let body = spooled_body(tmp.path());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("spooled body remains JSON");
+        let expected: serde_json::Value = serde_json::from_slice(payload).expect("payload JSON");
+        for (key, value) in expected.as_object().expect("payload object") {
+            assert_eq!(parsed.get(key), Some(value), "field {key}");
+        }
+        let capture = parsed
+            .get("_ai_memory_capture")
+            .expect("file-tool pre-tool-use spool carries capture protocol");
+        assert_eq!(capture.get("version"), Some(&serde_json::json!(1)));
+        assert_eq!(capture.get("tool_family"), Some(&serde_json::json!("file")));
+        assert_eq!(capture.get("disposition"), Some(&serde_json::json!("keep")));
     }
 }
 
