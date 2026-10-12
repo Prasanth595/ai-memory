@@ -2964,7 +2964,7 @@ mod tests {
             assert!(prompt.contains("page body"), "{name} prompt");
             assert!(prompt.contains("not a repo file path"), "{name} prompt");
             assert!(
-                prompt.contains("never pad with a cross-scope link"),
+                prompt.contains("Never pad with invented links"),
                 "{name} prompt"
             );
             assert!(

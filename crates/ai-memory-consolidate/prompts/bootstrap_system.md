@@ -75,9 +75,8 @@ input — reference it inline with a wikilink:
 
 A missing same-project target is fine: it is recorded as a pending
 link and resolves when the page appears. A missing `project:` or
-`_global:` target is reported by lint as broken. 2-5 well-chosen
-links per page beat exhaustive linking; zero links should be rare,
-but never pad with a cross-scope link you cannot see in the input.
+`_global:` target is reported by lint as broken. Link only to pages named in the input; zero
+links is fine when nothing is relevant. Never pad with invented links.
 
 ## OUTPUT LANGUAGE
 

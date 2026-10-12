@@ -99,15 +99,11 @@ input — reference it inline with a wikilink:
   or trap for every project, only if that exact path appears in
   the observations or page body.
 
-A missing same-project target is fine: it is recorded as a pending
-link and resolves when the page appears. A missing `project:` or
-`_global:` target is reported by lint as broken. A few well-chosen
-links beat exhaustive linking, and zero links is fine when nothing
-in the input genuinely relates. Link only where the input gives a
-genuine reason — a page named in the input, one you are emitting
-in this reply, or a same-project page the observations clearly
-relate to. Never pad a page with links to hit a number, and
-never pad with a cross-scope link you cannot see in the input.
+A missing `project:` or `_global:` target is reported by lint as broken. Link only to
+same-project pages named in the input or created in this same reply,
+and to cross-scope targets whose exact path appears in the
+observations or page body. Zero links is fine; never pad with
+invented links.
 
 ## OUTPUT LANGUAGE
 
