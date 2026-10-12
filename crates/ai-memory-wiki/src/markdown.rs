@@ -453,6 +453,80 @@ pub fn rewrite_local_wikilinks(body: &str, page_path: &PagePath, own_project: &s
     out
 }
 
+/// Replace every cross-scope wikilink (`[[project:path]]`,
+/// `[[workspace/project:path]]`, `[[_global:path]]`) that `keep` rejects with
+/// its label, or the bare path when it has none. Local links, code, and kept
+/// links are untouched. Targets are normalised exactly as [`extract_links`]
+/// does, so `keep` sees the same [`LinkTarget`] the write path would index.
+#[must_use]
+pub fn delink_cross_scope_wikilinks(
+    body: &str,
+    page_path: &PagePath,
+    keep: impl Fn(&LinkTarget) -> bool,
+) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut fence: Option<CodeFence> = None;
+    for raw_line in body.split_inclusive('\n') {
+        let (line, terminator) = split_line_terminator(raw_line);
+        let (next_fence, is_fence_or_code) = CodeFence::step(fence, line);
+        fence = next_fence;
+        if is_fence_or_code {
+            out.push_str(line);
+        } else {
+            let mut pos = 0;
+            for span in inline_code_spans(line) {
+                delink_segment(&line[pos..span.start], page_path, &keep, &mut out);
+                out.push_str(&line[span.clone()]);
+                pos = span.end;
+            }
+            delink_segment(&line[pos..], page_path, &keep, &mut out);
+        }
+        out.push_str(terminator);
+    }
+    out
+}
+
+fn delink_segment(
+    seg: &str,
+    page_path: &PagePath,
+    keep: &impl Fn(&LinkTarget) -> bool,
+    out: &mut String,
+) {
+    let mut rest = seg;
+    while let Some(start) = rest.find("[[") {
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("]]") else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let raw = &after_start[..end];
+        let (target, label) = raw
+            .split_once('|')
+            .map_or((raw, None), |(t, l)| (t, Some(l)));
+        let (workspace, project, path_part) = split_scope(target.trim());
+        let dropped = project.is_some()
+            && normalize_link_target(&path_part, page_path, true)
+                .and_then(|p| PagePath::new(p).ok())
+                .is_some_and(|path| {
+                    !keep(&LinkTarget {
+                        workspace,
+                        project,
+                        path,
+                        relation: None,
+                    })
+                });
+        if dropped {
+            out.push_str(label.map_or(path_part.as_str(), str::trim));
+        } else {
+            out.push_str("[[");
+            out.push_str(raw);
+            out.push_str("]]");
+        }
+        rest = &after_start[end + 2..];
+    }
+    out.push_str(rest);
+}
+
 /// Split a `split_inclusive('\n')` line into its content and line-ending,
 /// so a rewrite can copy the ending back verbatim (LF or CRLF).
 fn split_line_terminator(raw: &str) -> (&str, &str) {
@@ -1030,6 +1104,19 @@ mod tests {
     /// `[[_global:path]]` is a project-only qualifier, but the reserved
     /// preferences project lives in the default workspace (#1042). Pinning
     /// the workspace here is what lets a page outside `default` resolve.
+    #[test]
+    fn delink_cross_scope_wikilinks_rewrites_only_rejected_scoped_links() {
+        let page = PagePath::new("a/b.md").unwrap();
+        let body = "[[p:x]] [[p:y|why]] [[local]] `[[p:x]]`\n```\n[[p:x]]\n```\n[[_global:g]]";
+        let out = delink_cross_scope_wikilinks(body, &page, |t| t.path.as_str() == "y.md");
+        assert_eq!(
+            out,
+            "x [[p:y|why]] [[local]] `[[p:x]]`\n```\n[[p:x]]\n```\ng"
+        );
+        let all = delink_cross_scope_wikilinks(body, &page, |_| true);
+        assert_eq!(all, body);
+    }
+
     #[test]
     fn extract_links_global_wikilink_pins_default_workspace() {
         let links = extract_links(

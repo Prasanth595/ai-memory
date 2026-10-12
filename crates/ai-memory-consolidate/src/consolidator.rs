@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
+use crate::link_guard::strip_unresolved_cross_scope_links;
 use crate::path_sanitize::slugify_page_path;
 use crate::projection::{ObservationProjectionConfig, project_observations};
 use crate::types::{
@@ -320,30 +321,30 @@ impl Consolidator {
         }
 
         let frontmatter = build_frontmatter(&page, session_id, agent_kind);
-        let id = self
-            .wiki
-            .write_page(WritePageRequest {
-                workspace_id: ws,
-                project_id: proj,
-                path: path.clone(),
-                frontmatter,
-                body: page.body_markdown.clone(),
-                tier: Tier::Episodic,
-                pinned: false,
-                title: None,
-                admission_ctx: Some(AdmissionContext {
-                    op: AdmissionOp::Consolidate,
-                    actor: actor.clone(),
-                    ..Default::default()
-                }),
-                author_id,
-                actor,
-                evidence: vec![ai_memory_core::PageEvidence {
-                    kind: ai_memory_core::PageEvidenceKind::Session,
-                    source_id: session_id.to_string(),
-                }],
-            })
-            .await?;
+        let mut write = WritePageRequest {
+            workspace_id: ws,
+            project_id: proj,
+            path: path.clone(),
+            frontmatter,
+            body: page.body_markdown.clone(),
+            tier: Tier::Episodic,
+            pinned: false,
+            title: None,
+            admission_ctx: Some(AdmissionContext {
+                op: AdmissionOp::Consolidate,
+                actor: actor.clone(),
+                ..Default::default()
+            }),
+            author_id,
+            actor,
+            evidence: vec![ai_memory_core::PageEvidence {
+                kind: ai_memory_core::PageEvidenceKind::Session,
+                source_id: session_id.to_string(),
+            }],
+        };
+        strip_unresolved_cross_scope_links(&self.reader, &mut write).await;
+        page.body_markdown.clone_from(&write.body);
+        let id = self.wiki.write_page(write).await?;
         // Auto-commit the result so the supersession lands in git.
         let _ = self
             .wiki
@@ -803,6 +804,8 @@ impl Consolidator {
                 );
                 continue;
             }
+            strip_unresolved_cross_scope_links(&self.reader, &mut req).await;
+            outcome.new_body_markdown.clone_from(&req.body);
             requests.push(req);
             outcomes_preview.push(outcome);
         }
@@ -4863,6 +4866,125 @@ mod tests {
 
         let bad = wiki.read_page(ws, proj, &sanitized_path).unwrap();
         assert_eq!(bad.frontmatter["title"], "Bad path page");
+    }
+
+    /// Cross-scope links the model invents are de-linked before the write so
+    /// lint never sees them dangle; a link to a page that exists (control) and
+    /// a plain local link survive untouched. Unknown workspaces fail closed.
+    #[tokio::test]
+    async fn batch_delinks_unresolved_cross_scope_links_and_keeps_live_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, wiki, session, ws, proj) = batch_fixture(tmp.path()).await;
+        let other = store
+            .writer
+            .get_or_create_project(ws, "sibling", None)
+            .await
+            .unwrap();
+        wiki.write_page(WritePageRequest {
+            workspace_id: ws,
+            project_id: other,
+            path: PagePath::new("notes/real.md").unwrap(),
+            frontmatter: serde_json::json!({"title": "Real"}),
+            body: "real".into(),
+            tier: Tier::Semantic,
+            pinned: false,
+            title: None,
+            admission_ctx: None,
+            author_id: None,
+            actor: ai_memory_core::ActorContext::anonymous(),
+            evidence: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let body = "Keep [[sibling:notes/real.md]] and [[sibling:notes/real.md|real one]]. \
+            Drop [[sibling:notes/ghost.md]], [[nope:notes/x.md|labelled]], \
+            [[nows/sibling:notes/real.md]] and [[_global:missing]]. \
+            Local [[concepts/local]] stays. `[[sibling:notes/ghost.md]]` in code stays.";
+        let mut response = batch_targeting("concepts/linky.md", body);
+        response["updates"][0]["relations"] = serde_json::json!({
+            "causes": ["sibling:notes/real.md", "sibling:notes/ghost.md"],
+            "fixes": ["sibling:notes/ghost.md"],
+        });
+
+        let outcomes = Consolidator::new(
+            store.reader.clone(),
+            store.writer.clone(),
+            wiki.clone(),
+            Arc::new(ScriptedLlm(response)),
+            ws,
+            proj,
+        )
+        .consolidate_session_multi(
+            session,
+            false,
+            ai_memory_core::ActorContext::anonymous(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let page = wiki
+            .read_page(ws, proj, &PagePath::new("concepts/linky.md").unwrap())
+            .unwrap();
+        assert_eq!(
+            page.body,
+            "Keep [[sibling:notes/real.md]] and [[sibling:notes/real.md|real one]]. \
+            Drop notes/ghost.md, labelled, \
+            notes/real.md and missing. \
+            Local [[concepts/local]] stays. `[[sibling:notes/ghost.md]]` in code stays."
+        );
+        assert_eq!(outcomes[0].new_body_markdown, page.body);
+        assert_eq!(
+            page.frontmatter["relations"],
+            serde_json::json!({"causes": ["sibling:notes/real.md"]})
+        );
+
+        let dangling = store
+            .reader
+            .dangling_cross_project_links(ws, proj)
+            .await
+            .unwrap();
+        assert!(dangling.is_empty(), "lint would flag: {dangling:?}");
+    }
+
+    /// The single-page path shares the guard.
+    #[tokio::test]
+    async fn single_page_delinks_unresolved_cross_scope_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, wiki, session, ws, proj) = batch_fixture(tmp.path()).await;
+        let response = serde_json::json!({
+            "title": "Linky",
+            "body_markdown": "See [[ghost:a.md|the ghost]].",
+            "tags": [],
+        });
+        let outcome = Consolidator::new(
+            store.reader.clone(),
+            store.writer.clone(),
+            wiki.clone(),
+            Arc::new(ScriptedLlm(response)),
+            ws,
+            proj,
+        )
+        .consolidate_session(
+            session,
+            false,
+            ai_memory_core::ActorContext::anonymous(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.new_body_markdown, "See the ghost.");
+        assert!(
+            store
+                .reader
+                .dangling_cross_project_links(ws, proj)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A batch whose single update targets `path` — the model chooses this

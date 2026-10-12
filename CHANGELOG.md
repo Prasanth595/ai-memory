@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `consolidation.max_input_tokens` floor moved from 6,000 to 6,500 tokens so
   the larger prompts still leave room for observation evidence at the minimum.
   (#1219)
+- Fixed consolidation still writing `[[project:…]]` and `[[_global:…]]` wikilinks
+  (and `relations:` entries) to pages that do not exist, which `ai-memory lint`
+  reported as `broken_link`. Consolidation now checks each cross-scope target
+  against the store before writing and replaces an unresolved wikilink with its
+  label or bare path and drops an unresolved relation; links to existing pages
+  are kept. (#1218)
 - Fixed consolidation inventing `[[_global:…]]` and `[[project:…]]` wikilinks to
   pages that never existed, which `ai-memory lint` then reported as
   `broken_link`. The single, batch and bootstrap prompts told the model that a
