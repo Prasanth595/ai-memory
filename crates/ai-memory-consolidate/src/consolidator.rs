@@ -4977,6 +4977,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome.new_body_markdown, "See the ghost.");
+        // The guard looks up without creating: a model-invented project must
+        // not appear in the store.
+        let projects = store.reader.list_projects_with_stats(None).await.unwrap();
+        assert!(projects.iter().all(|p| p.project_name != "ghost"));
         assert!(
             store
                 .reader
