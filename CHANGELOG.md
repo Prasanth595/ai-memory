@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `consolidation.max_input_tokens` floor moved from 6,000 to 6,500 tokens so
   the larger prompts still leave room for observation evidence at the minimum.
   (#1219)
+- Shortened the consolidation prompts' wikilink guidance and removed the
+  permission to link to a missing same-project page as a "pending link", which
+  contradicted the rule to link only to visible pages. Same-project links now
+  need a page named in the input or created in the same reply; cross-scope
+  links still need the exact target in the observations or page body.
+  (#1219)
 - Fixed consolidation inventing `[[_global:…]]` and `[[project:…]]` wikilinks to
   pages that never existed, which `ai-memory lint` then reported as
   `broken_link`. The single, batch and bootstrap prompts told the model that a

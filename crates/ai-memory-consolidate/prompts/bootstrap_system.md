@@ -73,10 +73,11 @@ input — reference it inline with a wikilink:
   or trap for every project, only if that exact path appears in
   the supplied sources.
 
-A missing same-project target is fine: it is recorded as a pending
-link and resolves when the page appears. A missing `project:` or
-`_global:` target is reported by lint as broken. Link only to pages named in the input; zero
-links is fine when nothing is relevant. Never pad with invented links.
+Link only to same-project pages named in the supplied sources or
+created in this same reply, and to cross-scope targets whose exact
+path appears in the supplied sources. Never guess a target: a missing
+one is reported by lint as broken. Zero links is fine when nothing is
+relevant; never pad with invented links.
 
 ## OUTPUT LANGUAGE
 

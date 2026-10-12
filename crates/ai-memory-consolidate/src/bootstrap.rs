@@ -1815,8 +1815,16 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("Never invent project names or page paths"));
         assert!(SYSTEM_PROMPT.contains("the supplied sources"));
         assert!(SYSTEM_PROMPT.contains("not a repo file path"));
-        assert!(SYSTEM_PROMPT.contains("Never pad with invented links"));
+        assert!(SYSTEM_PROMPT.contains("never pad with invented links"));
         assert!(!SYSTEM_PROMPT.contains("A link whose target does not exist yet is acceptable"));
+        assert!(!SYSTEM_PROMPT.contains("A missing same-project target is fine"));
+        let flat = SYSTEM_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(flat.contains("same-project pages named in the supplied sources or created"));
+        assert!(flat.contains("cross-scope targets whose exact path appears in the supplied"));
+        assert!(SYSTEM_PROMPT.contains("Never guess a target"));
     }
 
     #[test]

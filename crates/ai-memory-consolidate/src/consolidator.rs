@@ -2964,40 +2964,39 @@ mod tests {
             assert!(prompt.contains("page body"), "{name} prompt");
             assert!(prompt.contains("not a repo file path"), "{name} prompt");
             assert!(
-                prompt.contains("Never pad with invented links"),
+                prompt.contains("never pad with invented links"),
                 "{name} prompt"
             );
             assert!(
-                !prompt.contains("A link whose target does not exist yet is acceptable"),
-                "{name} prompt must scope the pending-link allowance to the same project"
+                !prompt.contains("A missing same-project target is fine"),
+                "{name} prompt must not license linking to unseen pages"
+            );
+            let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                flat.contains("same-project pages named in the input or created in this same"),
+                "{name} prompt"
+            );
+            assert!(
+                flat.contains("cross-scope targets whose exact path appears in the"),
+                "{name} prompt must keep the #1217 cross-scope restriction"
             );
         }
     }
 
     /// #1219: a numeric quota ("2-5 links per page, zero links should be
     /// rare") pressures the model to invent links to hit the number. The
-    /// prompts must state that zero links is a fine outcome, that links
-    /// need a genuine reason visible in the input, and that padding to
-    /// hit a number is never acceptable — while keeping the #1217
-    /// cross-scope restriction intact.
+    /// prompts must call a linkless page fine and forbid padding, without
+    /// loosening the #1217 cross-scope restriction.
     #[test]
     fn consolidation_system_prompts_do_not_pressure_invented_links() {
         for (name, prompt) in [("single", SYSTEM_PROMPT), ("batch", BATCH_SYSTEM_PROMPT)] {
             assert!(
-                prompt.contains("zero links is fine"),
+                prompt.contains("Zero links is fine"),
                 "{name} prompt must permit a linkless page"
             );
             assert!(
-                prompt.contains("genuine reason"),
-                "{name} prompt must require a genuine reason to link"
-            );
-            assert!(
-                prompt.contains("Never pad a page with links to hit a number"),
-                "{name} prompt must forbid quota padding"
-            );
-            assert!(
-                prompt.contains("never pad with a cross-scope link"),
-                "{name} prompt must keep the #1217 cross-scope restriction"
+                prompt.contains("Never guess a target"),
+                "{name} prompt must forbid guessed targets"
             );
             assert!(
                 !prompt.contains("zero links should be rare"),
