@@ -1101,9 +1101,6 @@ mod tests {
         assert_eq!(l.path.as_str(), "decisions/adr-1.md");
     }
 
-    /// `[[_global:path]]` is a project-only qualifier, but the reserved
-    /// preferences project lives in the default workspace (#1042). Pinning
-    /// the workspace here is what lets a page outside `default` resolve.
     #[test]
     fn delink_cross_scope_wikilinks_rewrites_only_rejected_scoped_links() {
         let page = PagePath::new("a/b.md").unwrap();
@@ -1117,6 +1114,9 @@ mod tests {
         assert_eq!(all, body);
     }
 
+    /// `[[_global:path]]` is a project-only qualifier, but the reserved
+    /// preferences project lives in the default workspace (#1042). Pinning
+    /// the workspace here is what lets a page outside `default` resolve.
     #[test]
     fn extract_links_global_wikilink_pins_default_workspace() {
         let links = extract_links(

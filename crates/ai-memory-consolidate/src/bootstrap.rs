@@ -640,6 +640,8 @@ impl Bootstrap {
             evidence: Vec::new(),
         });
 
+        crate::link_guard::strip_unresolved_cross_scope_links(&self.reader, None, &mut requests)
+            .await;
         let _ids = self.wiki.apply_batch(requests).await?;
         let _ = self.wiki.commit_all(&format!(
             "bootstrap: {llm_chunks} LLM chunk(s), ingested {collected} sources, wrote {} pages",
@@ -2480,6 +2482,58 @@ mod tests {
             .await
             .unwrap();
         assert!(cleared.is_empty(), "a completed run clears its progress");
+    }
+
+    /// Bootstrap's batch write shares the cross-scope link guard: an invented
+    /// target is de-linked, a link to a page the same run creates is kept.
+    #[tokio::test]
+    async fn bootstrap_delinks_unresolved_cross_scope_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = Arc::new(SequencedLlm {
+            calls: AtomicUsize::new(0),
+            responses: vec![serde_json::json!({
+                "pages": [
+                    {
+                        "path": "concepts/a.md",
+                        "title": "A",
+                        "body_markdown": "[[scratch:concepts/b.md]] [[ghost:x.md|the ghost]]",
+                        "tags": [],
+                    },
+                    {
+                        "path": "concepts/b.md",
+                        "title": "B",
+                        "body_markdown": "b",
+                        "tags": [],
+                    },
+                ],
+                "rationale": "r",
+            })],
+            fail_at: None,
+        });
+        let (store, bootstrap, ws, proj) = bootstrap_fixture(tmp.path(), llm).await;
+        let sources = vec![BootstrapSource {
+            kind: SourceKind::GitCommit,
+            label: "git: one".into(),
+            text: "a".into(),
+        }];
+        bootstrap
+            .process_sources(&resume_test_config(ws, proj, false), sources)
+            .await
+            .unwrap();
+
+        let page = bootstrap
+            .wiki
+            .read_page(ws, proj, &PagePath::new("concepts/a.md").unwrap())
+            .unwrap();
+        assert_eq!(page.body, "[[scratch:concepts/b.md]] the ghost");
+        assert!(
+            store
+                .reader
+                .dangling_cross_project_links(ws, proj)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// Three sources sized so `plan_bootstrap_chunks` splits them into exactly

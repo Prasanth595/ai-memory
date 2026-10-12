@@ -342,7 +342,12 @@ impl Consolidator {
                 source_id: session_id.to_string(),
             }],
         };
-        strip_unresolved_cross_scope_links(&self.reader, &mut write).await;
+        strip_unresolved_cross_scope_links(
+            &self.reader,
+            write.author_id,
+            std::slice::from_mut(&mut write),
+        )
+        .await;
         page.body_markdown.clone_from(&write.body);
         let id = self.wiki.write_page(write).await?;
         // Auto-commit the result so the supersession lands in git.
@@ -804,10 +809,15 @@ impl Consolidator {
                 );
                 continue;
             }
-            strip_unresolved_cross_scope_links(&self.reader, &mut req).await;
-            outcome.new_body_markdown.clone_from(&req.body);
             requests.push(req);
             outcomes_preview.push(outcome);
+        }
+
+        // Once for the whole batch, so a link to a page the batch itself
+        // creates is not mistaken for a dangling one.
+        strip_unresolved_cross_scope_links(&self.reader, author_id, &mut requests).await;
+        for (outcome, req) in outcomes_preview.iter_mut().zip(&requests) {
+            outcome.new_body_markdown.clone_from(&req.body);
         }
 
         let ids = self.wiki.apply_batch(requests).await?;

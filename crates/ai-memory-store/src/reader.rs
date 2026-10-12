@@ -1716,6 +1716,21 @@ pub struct ContradictionEdge {
     pub resolved: bool,
 }
 
+/// A cross-scope link target that resolved to a project the viewer may read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkTargetResolution {
+    /// Workspace holding the target project.
+    pub workspace_id: WorkspaceId,
+    /// The target project, matched by exact name like the link indexer.
+    pub project_id: ProjectId,
+    /// Whether the target path has a latest page in that project.
+    pub page_exists: bool,
+}
+
+/// A cross-scope link target to resolve: workspace name (`None` = the source
+/// page's own workspace), project name, page path.
+pub type LinkTargetKey = (Option<String>, String, String);
+
 /// An unresolved cross-project link — a declared dependency on another
 /// project's page that does not resolve. Surfaced by `memory_lint`.
 #[derive(Debug, Clone, Serialize)]
@@ -8491,6 +8506,151 @@ impl ReaderPool {
                 )
                 .optional()?;
             Ok(id.map(|bytes| PageId::from_slice(&bytes)).transpose()?)
+        })
+        .await
+    }
+
+    /// Resolve cross-scope link targets exactly as the link indexer
+    /// (`latest_page_id_for_link`) and `dangling_cross_project_links` do:
+    /// workspace and project by exact `name`, no canonical or legacy-key
+    /// matching, no ambiguity errors, nothing created.
+    ///
+    /// A target whose workspace or project is missing, or whose project
+    /// refuses `viewer` a read (#708), is absent from the result, so an
+    /// unreadable page cannot be told from a nonexistent one. `viewer: None`
+    /// (root, or no database users) skips the check. One pool round-trip for
+    /// the whole batch (invariant #2).
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn resolve_link_targets(
+        &self,
+        own_workspace_id: WorkspaceId,
+        viewer: Option<UserId>,
+        targets: Vec<LinkTargetKey>,
+    ) -> StoreResult<std::collections::HashMap<LinkTargetKey, LinkTargetResolution>> {
+        use std::collections::{BTreeSet, HashMap};
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.with_conn(move |conn| {
+            let principal = viewer.map(crate::ProjectPrincipal::user);
+            let mut workspaces: HashMap<String, Option<WorkspaceId>> = HashMap::new();
+            let mut projects: HashMap<(WorkspaceId, String), Option<ProjectId>> = HashMap::new();
+            let mut readable: HashMap<(WorkspaceId, ProjectId), bool> = HashMap::new();
+            // Distinct paths to look up per readable project.
+            let mut wanted: HashMap<(WorkspaceId, ProjectId), BTreeSet<String>> = HashMap::new();
+            let mut resolved: Vec<(LinkTargetKey, WorkspaceId, ProjectId)> = Vec::new();
+
+            for key in targets {
+                let (ws_name, project_name, path) = &key;
+                let workspace_id = match ws_name {
+                    None => own_workspace_id,
+                    Some(name) => {
+                        let found = match workspaces.get(name) {
+                            Some(found) => *found,
+                            None => {
+                                let id: Option<Vec<u8>> = conn
+                                    .query_row(
+                                        "SELECT id FROM workspaces WHERE name = ?1",
+                                        params![name],
+                                        |row| row.get(0),
+                                    )
+                                    .optional()?;
+                                let id = id.map(|b| WorkspaceId::from_slice(&b)).transpose()?;
+                                workspaces.insert(name.clone(), id);
+                                id
+                            }
+                        };
+                        let Some(id) = found else { continue };
+                        id
+                    }
+                };
+                let project_id = match projects.get(&(workspace_id, project_name.clone())) {
+                    Some(found) => *found,
+                    None => {
+                        let id: Option<Vec<u8>> = conn
+                            .query_row(
+                                "SELECT id FROM projects WHERE workspace_id = ?1 AND name = ?2",
+                                params![workspace_id.as_bytes(), project_name],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        let id = id.map(|b| ProjectId::from_slice(&b)).transpose()?;
+                        projects.insert((workspace_id, project_name.clone()), id);
+                        id
+                    }
+                };
+                let Some(project_id) = project_id else {
+                    continue;
+                };
+                let may_read = match (&principal, readable.get(&(workspace_id, project_id))) {
+                    (_, Some(known)) => *known,
+                    (None, None) => true,
+                    (Some(principal), None) => {
+                        let ok = crate::project_authz::resolve_project_authz(
+                            conn,
+                            workspace_id,
+                            project_id,
+                            principal,
+                            true,
+                        )?
+                        .authorize(crate::ProjectAccess::Read)
+                        .is_ok();
+                        readable.insert((workspace_id, project_id), ok);
+                        ok
+                    }
+                };
+                if !may_read {
+                    continue;
+                }
+                wanted
+                    .entry((workspace_id, project_id))
+                    .or_default()
+                    .insert(path.clone());
+                resolved.push((key, workspace_id, project_id));
+            }
+
+            let mut existing: HashMap<(WorkspaceId, ProjectId), BTreeSet<String>> = HashMap::new();
+            for ((workspace_id, project_id), paths) in &wanted {
+                let placeholders = std::iter::repeat_n("?", paths.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT path FROM pages \
+                     WHERE workspace_id = ?1 AND project_id = ?2 AND is_latest = 1 \
+                       AND path IN ({placeholders})"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let ws_bytes = workspace_id.as_bytes();
+                let proj_bytes = project_id.as_bytes();
+                let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(paths.len() + 2);
+                binds.push(ws_bytes as &dyn rusqlite::ToSql);
+                binds.push(proj_bytes as &dyn rusqlite::ToSql);
+                binds.extend(paths.iter().map(|p| p as &dyn rusqlite::ToSql));
+                let rows = stmt.query_map(binds.as_slice(), |row| row.get::<_, String>(0))?;
+                let found = existing.entry((*workspace_id, *project_id)).or_default();
+                for row in rows {
+                    found.insert(row?);
+                }
+            }
+
+            Ok(resolved
+                .into_iter()
+                .map(|(key, workspace_id, project_id)| {
+                    let page_exists = existing
+                        .get(&(workspace_id, project_id))
+                        .is_some_and(|paths| paths.contains(&key.2));
+                    (
+                        key,
+                        LinkTargetResolution {
+                            workspace_id,
+                            project_id,
+                            page_exists,
+                        },
+                    )
+                })
+                .collect())
         })
         .await
     }
