@@ -507,6 +507,17 @@ pub struct HookState {
     /// marker is stripped and the Stop stays empty. Double opt-in: the client
     /// must also have been installed with `--capture-assistant` (#196).
     pub capture_assistant_enabled: bool,
+    /// `[ingest].drop_tool_use_id_prefixes` (default empty -- unchanged
+    /// behavior). A tool-call id starting with any entry is dropped
+    /// server-side, answering the same 202 a client-side capture Drop gets, so
+    /// the client never spools or retries it (#1241). Empty on every install
+    /// that does not configure it, which keeps the default path identical.
+    pub ingest_drop_tool_use_id_prefixes: Vec<String>,
+    /// `[ingest].drop_tool_names` (default empty -- unchanged behavior). A tool
+    /// name exactly equal to any entry is dropped the same way. Exact rather
+    /// than substring so a filter cannot silently swallow a different tool
+    /// whose name merely contains the configured one (#1241).
+    pub ingest_drop_tool_names: Vec<String>,
     /// `[handoff].claim_on_session_start` (default `true` — unchanged
     /// behavior). When `false`, `SessionStart` does not claim a pending
     /// handoff; it renders a non-consuming notice instead and leaves the
@@ -6079,6 +6090,8 @@ mod tests {
             session_consolidation_notify: None,
             profile_notify: None,
             capture_assistant_enabled: false,
+            ingest_drop_tool_use_id_prefixes: Vec::new(),
+            ingest_drop_tool_names: Vec::new(),
             claim_handoff_on_session_start: true,
             create_handoff_on_session_end: true,
             subagent_sessions: Arc::new(tokio::sync::Mutex::new(SubagentSessionSet::default())),
@@ -19529,5 +19542,176 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(ordinary, (state.workspace_id, state.project_id));
+    }
+
+    // -----------------------------------------------------------------
+    // #1241: server-side tool drop list
+    // -----------------------------------------------------------------
+
+    /// A store-backed `HookState` plus a session already started, which is the
+    /// prerequisite for a tool event to be storable at all. Returns the state
+    /// and the session id so a test can count what landed.
+    async fn state_with_live_session(tmp: &TempDir, sid: &str) -> HookState {
+        let state = make_state(tmp).await;
+        process(
+            &state,
+            HookEnvelope::from_query_and_body(
+                HookQuery {
+                    event: "session-start".into(),
+                    agent: Some("claude-code".into()),
+                    ..Default::default()
+                },
+                serde_json::json!({"session_id": sid, "cwd": "/repo"}),
+            ),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        state
+    }
+
+    /// `PreToolUse` for one tool call: the shape Claude Code posts, and the
+    /// one a runaway plugin produces.
+    fn tool_event(session_id: &str, tool_name: &str, tool_use_id: &str) -> HookEnvelope {
+        HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "pre-tool-use".into(),
+                agent: Some("claude-code".into()),
+                ..Default::default()
+            },
+            serde_json::json!({
+                "session_id": session_id,
+                "cwd": "/repo",
+                "tool_name": tool_name,
+                "tool_input": {"command": "true"},
+                "tool_use_id": tool_use_id,
+            }),
+        )
+    }
+
+    async fn stored_count(state: &HookState, sid: &str) -> usize {
+        let session_id: SessionId = sid.parse().unwrap();
+        state
+            .reader
+            .observations_for_session(session_id)
+            .await
+            .unwrap()
+            .len()
+    }
+
+    /// The prefix list drops the plugin call and keeps the real one. Counted
+    /// rather than matched on content: a stored tool observation deliberately
+    /// does not retain the `tool_use_id`, so the number of rows is the only
+    /// thing that can tell dropped from stored here. Adversarial with a
+    /// control: a filter that dropped everything would pass a drop-only test.
+    #[tokio::test]
+    async fn ingest_prefix_drop_removes_only_matching_tool_calls() {
+        let tmp = TempDir::new().unwrap();
+        let sid = "12121212-1212-1212-1212-121212121212";
+        let mut state = state_with_live_session(&tmp, sid).await;
+        state.ingest_drop_tool_use_id_prefixes = vec!["toolu_plugin_".to_string()];
+
+        for (name, id) in [
+            ("mcp__plugin__poll", "toolu_plugin_abc123"),
+            ("Bash", "toolu_real_xyz789"),
+        ] {
+            process(&state, tool_event(sid, name, id), None, Vec::new())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            stored_count(&state, sid).await,
+            2,
+            "session-start plus the ONE non-matching tool call; the plugin call must be dropped"
+        );
+        assert_eq!(
+            state.ingest_metrics.snapshot().dropped_by_policy,
+            1,
+            "the drop must be counted in dropped_by_policy"
+        );
+    }
+
+    /// The exact-name list matches the configured name and nothing else: a
+    /// name that merely CONTAINS it stays. `mcp__server__poll_extra` is the
+    /// discriminating control -- a prefix/substring rule would drop it too.
+    #[tokio::test]
+    async fn ingest_name_drop_matches_the_tool_name_exactly() {
+        let tmp = TempDir::new().unwrap();
+        let sid = "34343434-3434-3434-3434-343434343434";
+        let mut state = state_with_live_session(&tmp, sid).await;
+        state.ingest_drop_tool_names = vec!["mcp__server__poll".to_string()];
+
+        for (name, id) in [
+            ("mcp__server__poll", "toolu_drop_me"),
+            ("mcp__server__poll_extra", "toolu_keep_me"),
+        ] {
+            process(&state, tool_event(sid, name, id), None, Vec::new())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            stored_count(&state, sid).await,
+            2,
+            "session-start plus the near-miss name; only the exact name may be dropped"
+        );
+        assert_eq!(state.ingest_metrics.snapshot().dropped_by_policy, 1);
+    }
+
+    /// Both lists configured at once: a call is dropped if EITHER rule matches,
+    /// and a call matching neither still lands. Guards against wiring one list
+    /// and forgetting the other.
+    #[tokio::test]
+    async fn ingest_both_drop_lists_apply_together() {
+        let tmp = TempDir::new().unwrap();
+        let sid = "78787878-7878-7878-7878-787878787878";
+        let mut state = state_with_live_session(&tmp, sid).await;
+        state.ingest_drop_tool_use_id_prefixes = vec!["toolu_plugin_".to_string()];
+        state.ingest_drop_tool_names = vec!["mcp__server__poll".to_string()];
+
+        for (name, id) in [
+            ("mcp__plugin__poll", "toolu_plugin_abc123"), // prefix match
+            ("mcp__server__poll", "toolu_whatever"),      // name match
+            ("Bash", "toolu_real_xyz789"),                // neither: must store
+        ] {
+            process(&state, tool_event(sid, name, id), None, Vec::new())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            stored_count(&state, sid).await,
+            2,
+            "session-start plus the one call matching neither rule"
+        );
+        assert_eq!(state.ingest_metrics.snapshot().dropped_by_policy, 2);
+    }
+
+    /// The default install leaves both lists empty, so a call a configured
+    /// install would filter is still stored. This is the regression guard for
+    /// "empty by default changes nothing".
+    #[tokio::test]
+    async fn ingest_drop_lists_empty_leave_every_tool_call_alone() {
+        let tmp = TempDir::new().unwrap();
+        let sid = "56565656-5656-5656-5656-565656565656";
+        let state = state_with_live_session(&tmp, sid).await;
+
+        process(
+            &state,
+            tool_event(sid, "mcp__plugin__poll", "toolu_plugin_abc123"),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stored_count(&state, sid).await,
+            2,
+            "an unconfigured server must store every tool call"
+        );
+        assert_eq!(state.ingest_metrics.snapshot().dropped_by_policy, 0);
     }
 }
