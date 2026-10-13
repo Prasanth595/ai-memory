@@ -64,3 +64,9 @@ baseline-vs-baseline determinism check is clean (all accuracy/token deltas `0.00
 - **Regression gate.** Roadmap items 2-6 re-run this benchmark; a change
   that lowers a slice materially is a regression to fix, not a note to
   publish.
+
+- **Pre-registration.** Runs that gate a change pin the decision rules before
+  measuring — hypothesis, primary metric, the numeric regression threshold for
+  that run, kill criteria, and the pinned dataset/commit
+  ([TEMPLATE-pre-registration.md](TEMPLATE-pre-registration.md)). Published
+  run files stay immutable; a correction is a new dated file.
