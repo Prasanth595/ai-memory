@@ -1165,6 +1165,31 @@ max_attempts = 8                  # failed drain passes before dropping an event
                                   # only this limit. Age (7 days) and spool size (10,000 files)
                                   # still bound retention. Runtime env wins when set:
                                   # AI_MEMORY_HOOK_SPOOL_MAX_ATTEMPTS
+
+[ingest]
+# Server-side drop list for hook events, matched on the tool call rather than the
+# path. Both lists are empty by default, so an install that does not set them
+# behaves exactly as before. A match is acknowledged with 202 and counted in
+# `ingest.dropped_by_policy`, so the client treats the event as delivered and
+# never spools or retries it.
+#
+# This is the server's own policy, unlike the client marker's `[capture]` table:
+# that one travels with the checkout that declared it, so it cannot protect a
+# server from an older client, an unpatched one, or a plugin that starts polling
+# later. Only the operator can change this.
+#
+# Use it against a plugin that mints ids from a fixed stem. Claude Code's
+# out-of-turn plugin calls all start `toolu_plugin_`, so one entry retires the
+# whole family:
+# drop_tool_use_id_prefixes = ["toolu_plugin_"]
+drop_tool_use_id_prefixes = []    # a tool_use_id STARTING WITH any entry is dropped
+
+# Exact, case-sensitive tool names. Exact rather than a substring rule on
+# purpose: a filter that quietly swallows a different tool whose name merely
+# contains the pattern is worse than no filter. Use the prefix list for
+# anything that needs to match a family.
+# drop_tool_names = ["mcp__server__poll"]
+drop_tool_names = []              # a tool_name EQUAL to any entry is dropped
 ```
 
 The zero-LLM `query_intent` router also recognizes explicit Brazilian Portuguese

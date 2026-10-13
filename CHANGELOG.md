@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added a server-side drop list for hook events, `[ingest]`
+  `drop_tool_use_id_prefixes` and `drop_tool_names`. A tool call whose
+  `tool_use_id` starts with a configured prefix, or whose `tool_name` equals a
+  configured name, is dropped before any admission or store work on both
+  `/hook` and `/hook/batch`; the event is acknowledged with 202, so the client
+  treats it as delivered and never spools or retries it, and the drop is
+  counted in `ingest.dropped_by_policy`. This is the server's own lever,
+  unlike the client marker's `[capture]` table, so an operator can stop a
+  runaway plugin whose calls the server would otherwise store -- a Claude Code
+  plugin polling once per second produced roughly 450k observations a day
+  against about 20k from real work. Both lists are empty by default, so an
+  install that does not set them behaves exactly as before, and matching one
+  is exact for names and a prefix for ids (`drop_tool_names =
+  ["mcp__server__poll"]` does not affect `mcp__server__poll_extra`). The tool
+  fields are read through the same per-agent mapping the observation metadata
+  uses, so a newly supported agent does not end up with events the list cannot
+  see. (#1241)
 - Added a recall trace to web search. A project page has its own search box,
   and a search with `workspace` and `project`
   (`/web/search?q=…&workspace=…&project=…`) now ranks with the same hybrid
