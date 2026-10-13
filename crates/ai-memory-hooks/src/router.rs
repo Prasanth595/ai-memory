@@ -690,7 +690,11 @@ async fn admit_hook(
         HookProcessingOutcome::DroppedInvalid.record(&state.ingest_metrics);
         return (StatusCode::ACCEPTED, "invalid marker aliases");
     }
-    let Some(env) = inspect_capture_envelope(env) else {
+    let Some(env) = inspect_capture_envelope(
+        env,
+        &state.ingest_drop_tool_use_id_prefixes,
+        &state.ingest_drop_tool_names,
+    ) else {
         HookProcessingOutcome::DroppedPolicy.record(&state.ingest_metrics);
         return (StatusCode::ACCEPTED, "capture policy dropped");
     };
@@ -954,7 +958,11 @@ async fn handle_hook_batch(
             accepted_indices.push(idx);
             continue;
         }
-        let Some(env) = inspect_capture_envelope(env) else {
+        let Some(env) = inspect_capture_envelope(
+            env,
+            &state.ingest_drop_tool_use_id_prefixes,
+            &state.ingest_drop_tool_names,
+        ) else {
             // A protocol-directed drop is committed from the spool's point of
             // view, but intentionally spends neither ingress capacity nor a
             // source-rate token.
@@ -1096,7 +1104,62 @@ async fn handle_hook_batch(
 /// `None` is an acknowledged Drop; `Some` is either the legacy envelope or a
 /// strict metadata-only replacement. This deliberately never logs protocol or
 /// raw tool data: those fields can contain paths and captured content.
-fn inspect_capture_envelope(env: HookEnvelope) -> Option<HookEnvelope> {
+/// Server-side tool drop list (#1241): `[ingest]`'s
+/// `drop_tool_use_id_prefixes` / `drop_tool_names`.
+///
+/// A match is an acknowledged Drop, the same outcome a client-side capture
+/// Drop already gets: the caller sees 202, so it never spools or retries the
+/// event, and `HookProcessingOutcome::DroppedPolicy` counts it in
+/// `ingest.dropped_by_policy`.
+///
+/// Exists because the client-side `[capture]` policy travels with the
+/// checkout that declared it: a server cannot use it to protect itself from an
+/// older client, an unpatched one, or a plugin that starts polling an hour
+/// from now. This is the server's own lever, so only the operator can change
+/// it.
+///
+/// Runs before any admission or store work, and before the capture protocol is
+/// parsed: a server-side drop is terminal, so nothing downstream should get a
+/// chance to retain or reconsider the event.
+///
+/// The fields come from [`crate::capture_policy::tool_payload_fields`], the
+/// same per-agent mapping the observation metadata uses, so a newly supported
+/// agent cannot end up with events the drop list silently cannot see.
+/// The pure matching rule, split out so it is testable without a `HookState`.
+///
+/// A call is dropped when its id starts with any prefix OR its name equals any
+/// configured name. Both lists empty means no match, which is what keeps an
+/// unconfigured install's path identical.
+fn tool_drop_matches(env: &HookEnvelope, prefixes: &[String], names: &[String]) -> bool {
+    if prefixes.is_empty() && names.is_empty() {
+        return false;
+    }
+    let Some((name, id)) = crate::capture_policy::tool_payload_fields(env.agent, &env.raw) else {
+        // No closed tool-payload shape for this agent or event: nothing to
+        // match on, so nothing is dropped. Fail-open is correct here -- a drop
+        // list is an operator's traffic filter, not a privacy guard, and
+        // silently dropping an event whose fields we cannot read would lose
+        // real work rather than a plugin's polling.
+        return false;
+    };
+    if let Some(id) = id
+        && prefixes
+            .iter()
+            .any(|prefix| id.starts_with(prefix.as_str()))
+    {
+        return true;
+    }
+    names.iter().any(|configured| configured == name)
+}
+
+fn inspect_capture_envelope(
+    env: HookEnvelope,
+    drop_tool_use_id_prefixes: &[String],
+    drop_tool_names: &[String],
+) -> Option<HookEnvelope> {
+    if tool_drop_matches(&env, drop_tool_use_id_prefixes, drop_tool_names) {
+        return None;
+    }
     let Some(raw_protocol) = env.raw.get("_ai_memory_capture") else {
         return Some(env);
     };
@@ -17103,7 +17166,7 @@ mod tests {
             },
             raw.clone(),
         );
-        assert_eq!(inspect_capture_envelope(env).unwrap().raw, raw);
+        assert_eq!(inspect_capture_envelope_unfiltered(env).unwrap().raw, raw);
     }
 
     #[tokio::test]
@@ -17503,7 +17566,7 @@ mod tests {
                     .unwrap()
                     .contains("PRIVATE_CONTENT")
             );
-            let safe = inspect_capture_envelope(env).unwrap();
+            let safe = inspect_capture_envelope_unfiltered(env).unwrap();
             assert_eq!(safe.agent, AgentKind::Codex);
             assert_eq!(
                 safe.body_excerpt.as_deref(),
@@ -17530,7 +17593,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("keep", "active", "file", 2, "extracted"),
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.title_hint.as_deref(), Some("file"));
         assert_eq!(
             env.body_excerpt.as_deref(),
@@ -17555,7 +17618,7 @@ mod tests {
             },
             raw.clone(),
         );
-        assert_eq!(inspect_capture_envelope(env).unwrap().raw, raw);
+        assert_eq!(inspect_capture_envelope_unfiltered(env).unwrap().raw, raw);
     }
 
     #[test]
@@ -17574,7 +17637,7 @@ mod tests {
             "_ai_memory_capture": capture_protocol("keep", "active", "non-file", 0, "extracted"),
         });
         let env = HookEnvelope::from_query_and_body(query(), kept.clone());
-        assert_eq!(inspect_capture_envelope(env).unwrap().raw, kept);
+        assert_eq!(inspect_capture_envelope_unfiltered(env).unwrap().raw, kept);
 
         let dropped = serde_json::json!({
             "session_id": "shell-drop", "tool_name": "Bash",
@@ -17583,7 +17646,7 @@ mod tests {
             "_ai_memory_capture": capture_protocol("drop", "active", "non-file", 0, "extracted"),
         });
         let env = HookEnvelope::from_query_and_body(query(), dropped);
-        assert!(inspect_capture_envelope(env).is_none());
+        assert!(inspect_capture_envelope_unfiltered(env).is_none());
     }
 
     #[test]
@@ -17601,7 +17664,7 @@ mod tests {
             })
         };
         // What a current client sends under a broken marker is accepted.
-        let env = inspect_capture_envelope(HookEnvelope::from_query_and_body(
+        let env = inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
             query(),
             stripped("invalid"),
         ))
@@ -17616,14 +17679,14 @@ mod tests {
         // evaluate (brace expansion, a bracket class); an inactive one never
         // strips anything, so that claim is refused.
         assert!(
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(
+            inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
                 query(),
                 stripped("active")
             ))
             .is_some()
         );
         assert!(
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(
+            inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
                 query(),
                 stripped("inactive")
             ))
@@ -17639,7 +17702,8 @@ mod tests {
             "_ai_memory_capture": capture_protocol("keep", "invalid", "non-file", 0, "extracted"),
         });
         let env =
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(query(), kept)).unwrap();
+            inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(query(), kept))
+                .unwrap();
         assert_eq!(
             env.raw["_ai_memory_capture"]["disposition"],
             "metadata-only"
@@ -17653,9 +17717,11 @@ mod tests {
             "tool_input": { "query": "docs" },
             "_ai_memory_capture": capture_protocol("keep", "invalid", "non-file", 0, "extracted"),
         });
-        let env =
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(query(), search.clone()))
-                .unwrap();
+        let env = inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
+            query(),
+            search.clone(),
+        ))
+        .unwrap();
         assert_eq!(env.raw, search);
     }
 
@@ -17713,9 +17779,11 @@ mod tests {
                 "unknown",
             ),
         ] {
-            let env =
-                inspect_capture_envelope(HookEnvelope::from_query_and_body(query(), raw.clone()))
-                    .unwrap();
+            let env = inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
+                query(),
+                raw.clone(),
+            ))
+            .unwrap();
             assert_eq!(
                 env.raw["_ai_memory_capture"]["disposition"], "metadata-only",
                 "{raw}"
@@ -17733,7 +17801,7 @@ mod tests {
             kept("FutureTool", serde_json::json!({"x": 1}), "unknown"),
         ] {
             let env = HookEnvelope::from_query_and_body(query(), raw.clone());
-            assert_eq!(inspect_capture_envelope(env).unwrap().raw, raw);
+            assert_eq!(inspect_capture_envelope_unfiltered(env).unwrap().raw, raw);
         }
         // A current client's stripped output-reader body is accepted.
         let stripped = serde_json::json!({
@@ -17742,15 +17810,18 @@ mod tests {
             "_ai_memory_capture": capture_protocol("metadata-only", "active", "unknown", 0, "extracted"),
         });
         assert!(
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(query(), stripped))
-                .is_some()
+            inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
+                query(),
+                stripped
+            ))
+            .is_some()
         );
     }
 
     #[test]
     fn capture_protocol_invalid_shell_metadata_claim_must_be_canonical() {
         let admit = |path_count: u16, extraction: &str| {
-            inspect_capture_envelope(HookEnvelope::from_query_and_body(
+            inspect_capture_envelope_unfiltered(HookEnvelope::from_query_and_body(
                 HookQuery {
                     event: "post-tool-use".into(),
                     agent: Some("claude-code".into()),
@@ -17797,7 +17868,7 @@ mod tests {
                     "_ai_memory_capture": marker,
                 }),
             );
-            let stored = inspect_capture_envelope(env).map(|env| env.raw.to_string());
+            let stored = inspect_capture_envelope_unfiltered(env).map(|env| env.raw.to_string());
             assert!(
                 stored.is_none_or(|stored| !stored.contains("SENTINEL_SECRET")),
                 "shell output survived an unparseable marker"
@@ -17821,7 +17892,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("keep", "invalid", "file", 1, "extracted"),
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.raw["_ai_memory_capture"]["policy_state"], "invalid");
         assert_eq!(
             env.raw["_ai_memory_capture"]["disposition"],
@@ -17846,7 +17917,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("keep", "active", "search-list", 0, "not-applicable"),
             }),
         );
-        assert!(inspect_capture_envelope(env).is_none());
+        assert!(inspect_capture_envelope_unfiltered(env).is_none());
     }
 
     #[test]
@@ -17865,7 +17936,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("metadata-only", "active", "file", 1, "extracted"),
             }),
         );
-        assert!(inspect_capture_envelope(env).is_none());
+        assert!(inspect_capture_envelope_unfiltered(env).is_none());
     }
 
     #[test]
@@ -17882,7 +17953,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("metadata-only", "invalid", "file", 1, "extracted"),
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.raw["session_id"], "native-metadata");
         assert_eq!(env.raw["cwd"], "/repo");
         assert_eq!(env.raw["tool_call_id"], "safe-ID.1");
@@ -17906,7 +17977,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("metadata-only", "active", "file", 0, "missing-or-malformed"),
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.raw["session_id"], "generated-metadata");
         assert_eq!(env.raw["cwd"], "/generated");
         assert_eq!(
@@ -17929,7 +18000,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("metadata-only", "invalid", "file", 0, "missing-or-malformed"),
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert!(!env.raw.to_string().contains("SENTINEL_SECRET"));
         assert!(env.raw.get("extra").is_none());
     }
@@ -17961,7 +18032,7 @@ mod tests {
                 },
                 body,
             );
-            let env = inspect_capture_envelope(env).unwrap();
+            let env = inspect_capture_envelope_unfiltered(env).unwrap();
             assert_eq!(
                 env.body_excerpt.as_deref(),
                 Some("tool_family: file\noutcome: unknown")
@@ -18031,7 +18102,7 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("drop", "inactive", "unknown", 99, "extracted"),
             }),
         );
-        assert!(inspect_capture_envelope(dropped).is_none());
+        assert!(inspect_capture_envelope_unfiltered(dropped).is_none());
 
         let metadata = HookEnvelope::from_query_and_body(
             HookQuery {
@@ -18044,7 +18115,8 @@ mod tests {
                 "_ai_memory_capture": capture_protocol("metadata-only", "invalid", "file", 1, "extracted"),
             }),
         );
-        let metadata = inspect_capture_envelope(metadata).expect("valid metadata is retained");
+        let metadata =
+            inspect_capture_envelope_unfiltered(metadata).expect("valid metadata is retained");
         assert!(
             metadata.body_excerpt.as_deref() == Some("tool_family: file\noutcome: unknown"),
             "metadata-only protocol renders only its safe summary"
@@ -18293,7 +18365,7 @@ mod tests {
                 "_ai_memory_capture": { "version": 99 },
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.title_hint.as_deref(), Some("file"));
         assert_eq!(
             env.body_excerpt.as_deref(),
@@ -18324,7 +18396,7 @@ mod tests {
                 "_ai_memory_capture": { "version": 1, "disposition": "keep" },
             }),
         );
-        let env = inspect_capture_envelope(env).unwrap();
+        let env = inspect_capture_envelope_unfiltered(env).unwrap();
         assert_eq!(env.raw["_ai_memory_capture"]["policy_state"], "invalid");
         assert_eq!(
             env.raw["_ai_memory_capture"]["disposition"],
@@ -19544,50 +19616,74 @@ mod tests {
         assert_ne!(ordinary, (state.workspace_id, state.project_id));
     }
 
+    /// `inspect_capture_envelope` with the `[ingest]` drop lists empty, which
+    /// is what every existing capture-protocol test means: they exercise the
+    /// client protocol, not the server-side tool drop list, so they must be
+    /// unaffected by it (#1241).
+    fn inspect_capture_envelope_unfiltered(env: HookEnvelope) -> Option<HookEnvelope> {
+        inspect_capture_envelope(env, &[], &[])
+    }
+
     // -----------------------------------------------------------------
     // #1241: server-side tool drop list
     // -----------------------------------------------------------------
 
-    /// A store-backed `HookState` plus a session already started, which is the
-    /// prerequisite for a tool event to be storable at all. Returns the state
-    /// and the session id so a test can count what landed.
-    async fn state_with_live_session(tmp: &TempDir, sid: &str) -> HookState {
-        let state = make_state(tmp).await;
-        process(
-            &state,
-            HookEnvelope::from_query_and_body(
-                HookQuery {
-                    event: "session-start".into(),
-                    agent: Some("claude-code".into()),
-                    ..Default::default()
-                },
-                serde_json::json!({"session_id": sid, "cwd": "/repo"}),
-            ),
+    /// One batch of `(tool_name, tool_use_id)` tool calls for one session,
+    /// delivered through the real `/hook/batch` handler.
+    ///
+    /// The batch route is used rather than `/hook` because it processes its
+    /// items inline and awaits them, so the test can count stored rows as soon
+    /// as it returns. `/hook` spawns, and a test would have to guess how long
+    /// to wait. `ingest_drop_applies_to_the_single_event_route_too` covers the
+    /// other route for the one case where the difference matters.
+    async fn post_tools(state: &HookState, sid: &str, tools: &[(&str, &str)]) -> serde_json::Value {
+        let items: Vec<HookBatchItem> = tools
+            .iter()
+            .map(|(name, id)| HookBatchItem {
+                url: "http://h/hook?event=pre-tool-use&agent=claude-code".into(),
+                body: serde_json::json!({
+                    "session_id": sid,
+                    "cwd": "/repo",
+                    "tool_name": name,
+                    "tool_input": {"command": "true"},
+                    "tool_use_id": id,
+                }),
+            })
+            .collect();
+        let response = handle_hook_batch(
+            State(std::sync::Arc::new(state.clone())),
             None,
-            Vec::new(),
+            None,
+            None,
+            HeaderMap::new(),
+            Json(items),
         )
         .await
-        .unwrap();
-        state
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
-    /// `PreToolUse` for one tool call: the shape Claude Code posts, and the
-    /// one a runaway plugin produces.
-    fn tool_event(session_id: &str, tool_name: &str, tool_use_id: &str) -> HookEnvelope {
-        HookEnvelope::from_query_and_body(
-            HookQuery {
-                event: "pre-tool-use".into(),
-                agent: Some("claude-code".into()),
-                ..Default::default()
-            },
-            serde_json::json!({
-                "session_id": session_id,
-                "cwd": "/repo",
-                "tool_name": tool_name,
-                "tool_input": {"command": "true"},
-                "tool_use_id": tool_use_id,
-            }),
+    /// Start a session through the same route, so later tool events have a
+    /// live session to attach to.
+    async fn start_session(state: &HookState, sid: &str) {
+        let response = handle_hook_batch(
+            State(std::sync::Arc::new(state.clone())),
+            None,
+            None,
+            None,
+            HeaderMap::new(),
+            Json(vec![HookBatchItem {
+                url: "http://h/hook?event=session-start&agent=claude-code".into(),
+                body: serde_json::json!({"session_id": sid, "cwd": "/repo"}),
+            }]),
         )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     async fn stored_count(state: &HookState, sid: &str) -> usize {
@@ -19600,27 +19696,34 @@ mod tests {
             .len()
     }
 
-    /// The prefix list drops the plugin call and keeps the real one. Counted
-    /// rather than matched on content: a stored tool observation deliberately
-    /// does not retain the `tool_use_id`, so the number of rows is the only
-    /// thing that can tell dropped from stored here. Adversarial with a
-    /// control: a filter that dropped everything would pass a drop-only test.
+    /// The prefix list drops the plugin call and keeps the real one.
+    ///
+    /// Counted rather than matched on content: a stored tool observation
+    /// deliberately does not retain the `tool_use_id`, so the row count is the
+    /// one discriminator available here. Adversarial with a control -- a filter
+    /// that dropped everything would pass a drop-only test.
     #[tokio::test]
     async fn ingest_prefix_drop_removes_only_matching_tool_calls() {
         let tmp = TempDir::new().unwrap();
         let sid = "12121212-1212-1212-1212-121212121212";
-        let mut state = state_with_live_session(&tmp, sid).await;
+        let mut state = make_state(&tmp).await;
         state.ingest_drop_tool_use_id_prefixes = vec!["toolu_plugin_".to_string()];
 
-        for (name, id) in [
-            ("mcp__plugin__poll", "toolu_plugin_abc123"),
-            ("Bash", "toolu_real_xyz789"),
-        ] {
-            process(&state, tool_event(sid, name, id), None, Vec::new())
-                .await
-                .unwrap();
-        }
+        start_session(&state, sid).await;
+        let ack = post_tools(
+            &state,
+            sid,
+            &[
+                ("mcp__plugin__poll", "toolu_plugin_abc123"),
+                ("Bash", "toolu_real_xyz789"),
+            ],
+        )
+        .await;
 
+        assert_eq!(
+            ack["accepted"], 2,
+            "both items are committed from the spool's view, the dropped one included"
+        );
         assert_eq!(
             stored_count(&state, sid).await,
             2,
@@ -19634,23 +19737,25 @@ mod tests {
     }
 
     /// The exact-name list matches the configured name and nothing else: a
-    /// name that merely CONTAINS it stays. `mcp__server__poll_extra` is the
-    /// discriminating control -- a prefix/substring rule would drop it too.
+    /// name merely CONTAINING it stays. `mcp__server__poll_extra` is the
+    /// discriminating control -- a prefix rule would drop it too.
     #[tokio::test]
     async fn ingest_name_drop_matches_the_tool_name_exactly() {
         let tmp = TempDir::new().unwrap();
         let sid = "34343434-3434-3434-3434-343434343434";
-        let mut state = state_with_live_session(&tmp, sid).await;
+        let mut state = make_state(&tmp).await;
         state.ingest_drop_tool_names = vec!["mcp__server__poll".to_string()];
 
-        for (name, id) in [
-            ("mcp__server__poll", "toolu_drop_me"),
-            ("mcp__server__poll_extra", "toolu_keep_me"),
-        ] {
-            process(&state, tool_event(sid, name, id), None, Vec::new())
-                .await
-                .unwrap();
-        }
+        start_session(&state, sid).await;
+        post_tools(
+            &state,
+            sid,
+            &[
+                ("mcp__server__poll", "toolu_drop_me"),
+                ("mcp__server__poll_extra", "toolu_keep_me"),
+            ],
+        )
+        .await;
 
         assert_eq!(
             stored_count(&state, sid).await,
@@ -19660,26 +19765,28 @@ mod tests {
         assert_eq!(state.ingest_metrics.snapshot().dropped_by_policy, 1);
     }
 
-    /// Both lists configured at once: a call is dropped if EITHER rule matches,
-    /// and a call matching neither still lands. Guards against wiring one list
-    /// and forgetting the other.
+    /// Both lists at once: a call is dropped if EITHER rule matches, and one
+    /// matching neither still lands. Guards against wiring one list and
+    /// forgetting the other.
     #[tokio::test]
     async fn ingest_both_drop_lists_apply_together() {
         let tmp = TempDir::new().unwrap();
         let sid = "78787878-7878-7878-7878-787878787878";
-        let mut state = state_with_live_session(&tmp, sid).await;
+        let mut state = make_state(&tmp).await;
         state.ingest_drop_tool_use_id_prefixes = vec!["toolu_plugin_".to_string()];
         state.ingest_drop_tool_names = vec!["mcp__server__poll".to_string()];
 
-        for (name, id) in [
-            ("mcp__plugin__poll", "toolu_plugin_abc123"), // prefix match
-            ("mcp__server__poll", "toolu_whatever"),      // name match
-            ("Bash", "toolu_real_xyz789"),                // neither: must store
-        ] {
-            process(&state, tool_event(sid, name, id), None, Vec::new())
-                .await
-                .unwrap();
-        }
+        start_session(&state, sid).await;
+        post_tools(
+            &state,
+            sid,
+            &[
+                ("mcp__plugin__poll", "toolu_plugin_abc123"),
+                ("mcp__server__poll", "toolu_whatever"),
+                ("Bash", "toolu_real_xyz789"),
+            ],
+        )
+        .await;
 
         assert_eq!(
             stored_count(&state, sid).await,
@@ -19696,16 +19803,10 @@ mod tests {
     async fn ingest_drop_lists_empty_leave_every_tool_call_alone() {
         let tmp = TempDir::new().unwrap();
         let sid = "56565656-5656-5656-5656-565656565656";
-        let state = state_with_live_session(&tmp, sid).await;
+        let state = make_state(&tmp).await;
 
-        process(
-            &state,
-            tool_event(sid, "mcp__plugin__poll", "toolu_plugin_abc123"),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
+        start_session(&state, sid).await;
+        post_tools(&state, sid, &[("mcp__plugin__poll", "toolu_plugin_abc123")]).await;
 
         assert_eq!(
             stored_count(&state, sid).await,
@@ -19713,5 +19814,51 @@ mod tests {
             "an unconfigured server must store every tool call"
         );
         assert_eq!(state.ingest_metrics.snapshot().dropped_by_policy, 0);
+    }
+
+    /// The single-event `/hook` route honours the list too, and answers the
+    /// 202 a client Drop gets, so the client treats the event as delivered and
+    /// never spools or retries it. The drop is asserted on the metric rather
+    /// than the row count because `/hook` processes asynchronously and the row
+    /// count would race the spawn.
+    #[tokio::test]
+    async fn ingest_drop_applies_to_the_single_event_route_too() {
+        let tmp = TempDir::new().unwrap();
+        let sid = "90909090-9090-9090-9090-090909090909";
+        let mut state = make_state(&tmp).await;
+        state.ingest_drop_tool_use_id_prefixes = vec!["toolu_plugin_".to_string()];
+
+        let response = handle_hook(
+            State(std::sync::Arc::new(state.clone())),
+            Query(HookQuery {
+                event: "pre-tool-use".into(),
+                agent: Some("claude-code".into()),
+                ..Default::default()
+            }),
+            None,
+            None,
+            None,
+            HeaderMap::new(),
+            Json(serde_json::json!({
+                "session_id": sid,
+                "cwd": "/repo",
+                "tool_name": "mcp__plugin__poll",
+                "tool_input": {"command": "true"},
+                "tool_use_id": "toolu_plugin_abc123",
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "a dropped event answers 202 so the client never spools or retries it"
+        );
+        assert_eq!(
+            state.ingest_metrics.snapshot().dropped_by_policy,
+            1,
+            "the single-event route must apply the drop list too"
+        );
     }
 }

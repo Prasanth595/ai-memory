@@ -154,13 +154,17 @@ impl ToolOutcome {
     }
 }
 
-/// Extracts only the closed, fixture-backed metadata schemas used for tool
-/// observations. It intentionally does not reuse broad envelope fallbacks.
-pub(crate) fn tool_observation_metadata(
-    agent: AgentKind,
-    raw: &Value,
-    require_input: bool,
-) -> Option<ToolObservationMetadata> {
+/// The raw tool name and tool-call id of a tool payload, per agent.
+///
+/// Split out of [`tool_observation_metadata`] because the fields live in
+/// different places per agent, and both the observation metadata and the
+/// server-side drop list (#1241) need the same answer. Keeping one mapping
+/// means a new agent cannot end up with unfilterable events because the drop
+/// check was taught a different field spelling than the metadata extractor.
+///
+/// `None` when the agent has no closed tool-payload shape or the payload
+/// lacks the required name; the id is independently optional.
+pub(crate) fn tool_payload_fields(agent: AgentKind, raw: &Value) -> Option<(&str, Option<&str>)> {
     let object = raw.as_object()?;
     let (name, id) = match agent {
         // ZCode tool payloads carry Claude Code's snake_case aliases
@@ -218,6 +222,18 @@ pub(crate) fn tool_observation_metadata(
         AgentKind::Pool => (object.get("tool_name")?.as_str()?, None),
         _ => return None,
     };
+    Some((name, id))
+}
+
+/// Extracts only the closed, fixture-backed metadata schemas used for tool
+/// observations. It intentionally does not reuse broad envelope fallbacks.
+pub(crate) fn tool_observation_metadata(
+    agent: AgentKind,
+    raw: &Value,
+    require_input: bool,
+) -> Option<ToolObservationMetadata> {
+    let (name, id) = tool_payload_fields(agent, raw)?;
+    let object = raw.as_object()?;
     // PreToolUse needs a proven input shape. PostToolUse deliberately does
     // not: established adapters commonly omit inputs from their response.
     let has_args = !require_input
