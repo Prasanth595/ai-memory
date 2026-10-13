@@ -601,6 +601,9 @@ pub struct Config {
     pub routing: RoutingSettings,
     /// Client-side hook spool retry policy.
     pub hook_spool: HookSpoolSettings,
+    /// `[ingest]` -- server-side ingestion policy that does not travel with a
+    /// client. See [`IngestSettings`].
+    pub ingest: IngestSettings,
     /// Env-backed alias for hook ingest tokens per second per source.
     pub hook_rate_per_sec: f64,
     /// Env-backed alias for hook ingest burst tokens per source.
@@ -1181,6 +1184,110 @@ impl Default for AutoScopeSettings {
     }
 }
 
+/// Maximum entries in either `[ingest]` drop list.
+///
+/// Both lists are consulted per event, so their size is on the hot path; a
+/// generous cap still leaves room for a plugin's whole tool namespace.
+pub const MAX_INGEST_DROP_ENTRIES: usize = 128;
+
+/// Longest accepted entry in an `[ingest]` drop list.
+///
+/// A `tool_use_id` is short (`toolu_...`), and a tool name is a name, not a
+/// sentence; an entry longer than this is a paste mistake rather than a
+/// pattern, and rejecting it early keeps the comparison cheap.
+pub const MAX_INGEST_DROP_ENTRY_LEN: usize = 256;
+
+/// `[ingest]` section of `config.toml`: server-side ingestion policy.
+///
+/// Distinct from the client's `[capture]` marker table on purpose. That table
+/// travels with the checkout that declared it and describes what the CLIENT
+/// chose to send; this one is the server's own policy, so it protects an
+/// install from a client that is older, unpatched, or simply not this
+/// repository's. A client cannot widen or narrow it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IngestSettings {
+    /// Drop any hook event whose tool-call id STARTS WITH one of these
+    /// strings, answering the same 202 a client-side capture Drop gets (see
+    /// [`Self::drop_tool_names`] for the full contract).
+    ///
+    /// Prefix matching is what makes this usable against a plugin that mints
+    /// ids from a fixed stem: Claude Code's out-of-turn plugin calls all start
+    /// `toolu_plugin_`, so one entry retires the whole family without listing
+    /// every call. An empty entry would match every id, so entries are
+    /// required to be non-empty.
+    pub drop_tool_use_id_prefixes: Vec<String>,
+    /// Drop any hook event whose tool NAME equals one of these strings
+    /// (exact, case-sensitive), answering the same 202 a client-side capture
+    /// Drop gets: the client treats the event as delivered and never spools or
+    /// retries it, and the drop is counted in `ingest.dropped_by_policy`.
+    ///
+    /// Exact matching is deliberate. A tool name is a closed identifier the
+    /// client already sends verbatim (`mcp__server__poll`, `Bash`), so a
+    /// substring or glob rule would silently swallow unrelated tools whose
+    /// names happen to contain the pattern -- a filter that quietly drops real
+    /// work is worse than no filter. Use `drop_tool_use_id_prefixes` for
+    /// anything that needs to match a family.
+    ///
+    /// Both lists are empty by default, so an install that never sets them
+    /// behaves exactly as it did before this section existed.
+    pub drop_tool_names: Vec<String>,
+}
+
+impl IngestSettings {
+    /// Validate and normalize both lists in place.
+    ///
+    /// Trims each entry (a hand-edited `config.toml` or a CSV env override
+    /// easily carries a stray space) rather than rejecting it, then rejects an
+    /// empty entry, an over-long entry, and a list past
+    /// [`MAX_INGEST_DROP_ENTRIES`].
+    ///
+    /// An empty entry is refused rather than ignored because it is not inert:
+    /// `starts_with("")` is true for every id, so `[""]` in the prefix list
+    /// would drop every tool event on the server -- almost certainly not what
+    /// someone writing a drop list meant, and catastrophic to discover
+    /// afterwards.
+    ///
+    /// # Errors
+    /// Returns a message naming the key and the offending entry or bound.
+    fn validate(&mut self) -> Result<(), String> {
+        validate_ingest_drop_list(
+            "ingest.drop_tool_use_id_prefixes",
+            &mut self.drop_tool_use_id_prefixes,
+        )?;
+        validate_ingest_drop_list("ingest.drop_tool_names", &mut self.drop_tool_names)?;
+        Ok(())
+    }
+}
+
+/// Shared validation for one `[ingest]` drop list. `key` is the
+/// self-locating prefix used in every message.
+fn validate_ingest_drop_list(key: &str, entries: &mut [String]) -> Result<(), String> {
+    if entries.len() > MAX_INGEST_DROP_ENTRIES {
+        return Err(format!(
+            "{key} must have at most {MAX_INGEST_DROP_ENTRIES} entries (got {});              this is a drop list for runaway tool traffic, not a policy database",
+            entries.len()
+        ));
+    }
+    for entry in entries.iter_mut() {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return Err(format!(
+                "{key} entries must not be empty or whitespace-only; an empty prefix                  matches every tool-call id and would drop all of them"
+            ));
+        }
+        if trimmed.chars().count() > MAX_INGEST_DROP_ENTRY_LEN {
+            return Err(format!(
+                "{key} entry {entry:?} exceeds the {MAX_INGEST_DROP_ENTRY_LEN}-character                  limit (a tool-call id or tool name, not a sentence)"
+            ));
+        }
+        if trimmed != entry {
+            *entry = trimmed.to_string();
+        }
+    }
+    Ok(())
+}
+
 /// `[routing]` section of `config.toml`.
 ///
 /// Set under `[routing]` in `config.toml` or via the
@@ -1282,6 +1389,7 @@ impl Default for Config {
             auto_scope: AutoScopeSettings::default(),
             routing: RoutingSettings::default(),
             hook_spool: HookSpoolSettings::default(),
+            ingest: IngestSettings::default(),
             hook_rate_per_sec: 0.0,
             hook_rate_burst: 0.0,
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
@@ -2222,6 +2330,13 @@ impl Config {
         // one) at startup rather than shipping a slow, meaningless, or
         // silently-inert filter into every search.
         if let Err(message) = config.search.fts.validate() {
+            anyhow::bail!("{message}");
+        }
+        // `[ingest]` server-side tool drop lists (#1241): a malformed entry is
+        // rejected at startup rather than silently changing what the server
+        // stores. An empty prefix in particular would drop every tool event,
+        // so it fails here instead of being discovered from missing data.
+        if let Err(message) = config.ingest.validate() {
             anyhow::bail!("{message}");
         }
         // A4 entropy filter thresholds: reject an unusable threshold at startup
@@ -4257,6 +4372,126 @@ mod tests {
                 "unexpected error for {value}: {error:#}"
             );
         }
+    }
+
+    /// #1241: the `[ingest]` drop lists are additive and empty by default, so
+    /// an install that never sets them must behave exactly as before. This
+    /// pins both halves: the defaults, and that loading a config that does not
+    /// mention the section leaves them empty.
+    #[test]
+    fn ingest_drop_lists_default_to_empty() {
+        let defaults = IngestSettings::default();
+        assert!(defaults.drop_tool_use_id_prefixes.is_empty());
+        assert!(defaults.drop_tool_names.is_empty());
+
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[consolidation]
+max_output_tokens = 2000
+",
+        )
+        .unwrap();
+        let cfg = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert!(cfg.ingest.drop_tool_use_id_prefixes.is_empty());
+        assert!(cfg.ingest.drop_tool_names.is_empty());
+    }
+
+    /// The lists round-trip, and a stray space around an entry is trimmed
+    /// rather than rejected (a hand-edited TOML or a CSV env var carries one
+    /// easily, and it would otherwise make the entry silently never match).
+    #[test]
+    fn load_accepts_and_normalizes_the_ingest_drop_lists() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[ingest]
+             drop_tool_use_id_prefixes = [\"  toolu_plugin_\", \"toolu_poll_\"]
+             drop_tool_names = [\"mcp__server__poll\"]
+",
+        )
+        .unwrap();
+        let cfg = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(
+            cfg.ingest.drop_tool_use_id_prefixes,
+            vec!["toolu_plugin_".to_string(), "toolu_poll_".to_string()]
+        );
+        assert_eq!(
+            cfg.ingest.drop_tool_names,
+            vec!["mcp__server__poll".to_string()]
+        );
+    }
+
+    /// An empty or whitespace-only entry is refused, not ignored: an empty
+    /// prefix matches every tool-call id, so accepting it would silently drop
+    /// all tool traffic on the server.
+    #[test]
+    fn load_rejects_a_blank_ingest_drop_entry() {
+        for (key, value) in [
+            ("drop_tool_use_id_prefixes", "[\"\"]"),
+            ("drop_tool_use_id_prefixes", "[\"   \"]"),
+            ("drop_tool_names", "[\"\"]"),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let config_path = tmp.path().join("config.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "[ingest]
+{key} = {value}
+"
+                ),
+            )
+            .unwrap();
+            let error = Config::load(Some(&config_path), Some(tmp.path().to_path_buf()))
+                .expect_err("a blank drop entry must fail closed");
+            assert!(
+                error.to_string().contains(key),
+                "the error must name the offending key: {error:#}"
+            );
+        }
+    }
+
+    /// An over-long entry is a paste mistake, not a pattern, and an over-long
+    /// list is a policy database. Both are refused at startup.
+    #[test]
+    fn load_rejects_an_oversized_ingest_drop_entry_or_list() {
+        let too_long = "x".repeat(MAX_INGEST_DROP_ENTRY_LEN + 1);
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[ingest]
+drop_tool_names = [\"{too_long}\"]
+"
+            ),
+        )
+        .unwrap();
+        let error = Config::load(Some(&config_path), Some(tmp.path().to_path_buf()))
+            .expect_err("an over-long entry must fail closed");
+        assert!(error.to_string().contains("drop_tool_names"), "{error:#}");
+
+        let entries = (0..=MAX_INGEST_DROP_ENTRIES)
+            .map(|index| format!("\"tool-{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[ingest]
+drop_tool_names = [{entries}]
+"
+            ),
+        )
+        .unwrap();
+        let error = Config::load(Some(&config_path), Some(tmp.path().to_path_buf()))
+            .expect_err("an over-long list must fail closed");
+        assert!(error.to_string().contains("drop_tool_names"), "{error:#}");
     }
 
     #[test]
