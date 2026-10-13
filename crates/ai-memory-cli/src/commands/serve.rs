@@ -1549,6 +1549,8 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 session_consolidation_notify,
                 profile_notify: Some(profile_notify.clone()),
                 capture_assistant_enabled: config.capture_assistant,
+                ingest_drop_tool_use_id_prefixes: config.ingest.drop_tool_use_id_prefixes.clone(),
+                ingest_drop_tool_names: config.ingest.drop_tool_names.clone(),
                 claim_handoff_on_session_start: config.handoff.claim_on_session_start,
                 create_handoff_on_session_end: config.handoff.create_on_session_end,
                 per_user_slots: config.slots.per_user,

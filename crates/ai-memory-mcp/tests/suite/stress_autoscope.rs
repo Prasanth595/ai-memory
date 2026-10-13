@@ -165,6 +165,8 @@ impl Harness {
             session_consolidation_notify: None,
             profile_notify: None,
             capture_assistant_enabled: false,
+            ingest_drop_tool_use_id_prefixes: Vec::new(),
+            ingest_drop_tool_names: Vec::new(),
             claim_handoff_on_session_start: true,
             create_handoff_on_session_end: true,
             per_user_slots: false,
