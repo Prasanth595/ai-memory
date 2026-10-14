@@ -12,6 +12,12 @@ version in [`docs/changelog/`](docs/changelog/):
 ## [Unreleased]
 
 ### Fixed
+- Fixed auto-improve patches losing track of a page's sections after a code
+  block that contains a different fence. A line of three backticks inside a
+  `~~~` block (or a shorter run inside a longer fence) ended the block early,
+  so the headings after it were missed, and a `replace_section` on the
+  section before them replaced those sections too. A fence now closes only on
+  a run of the same character that is at least as long.
 - Fixed Windows capture dropping the body of file and shell tool events
   the client had kept. With `[capture] ignore_paths` active, server
   re-inspection compiled a POSIX never-match sentinel and treated the
