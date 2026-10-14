@@ -12,6 +12,11 @@ version in [`docs/changelog/`](docs/changelog/):
 ## [Unreleased]
 
 ### Fixed
+- Fixed the curator report treating a per-user focus slot
+  (`_slots/<operator>/current-focus.md`) as an ordinary slot. It only
+  recognised the shared `_slots/current-focus.md`, so with per-user slots the
+  focus slot got the 30-day stale threshold instead of the 7-day one and was
+  reported three weeks late.
 - Fixed Windows capture dropping the body of file and shell tool events
   the client had kept. With `[capture] ignore_paths` active, server
   re-inspection compiled a POSIX never-match sentinel and treated the
