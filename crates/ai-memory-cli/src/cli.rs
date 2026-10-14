@@ -170,7 +170,7 @@ pub enum Command {
     /// SQL-only). Flags sessions whose cwd resolves to a different project and
     /// observations whose project disagrees with their session.
     AuditContamination(AuditContaminationArgs),
-    /// Full-text search the wiki via FTS5.
+    /// Full-text search the wiki via FTS5, in one project or (`--global`) all.
     Search(SearchArgs),
     /// Fetch and display the full body of a wiki page.
     /// Accepts either `--path` (exact path) or a positional query that
@@ -2114,6 +2114,15 @@ pub struct SearchArgs {
     /// Project name. When omitted, auto-derived from the current project.
     #[arg(long)]
     pub project: Option<String>,
+    /// Search every project instead of the current one, like
+    /// `memory_query(global=true)`. Each hit names its workspace and project,
+    /// and the current directory plays no part.
+    #[arg(
+        long,
+        visible_alias = "all-projects",
+        conflicts_with_all = ["workspace", "project"]
+    )]
+    pub global: bool,
     /// Maximum number of hits to return.
     #[arg(short = 'n', long, default_value_t = 10)]
     pub limit: usize,
@@ -3494,6 +3503,43 @@ mod tests {
         };
         assert_eq!(args.applies_to, ["rust", "typescript"]);
         assert_eq!(args.enforced_by.as_deref(), Some("pre-push hook"));
+    }
+
+    /// `search --global` (or `--all-projects`) searches every project, so it
+    /// refuses a scope flag instead of quietly ignoring one, as
+    /// `memory_query(global=true)` refuses `workspace`/`project` (#1253).
+    #[test]
+    fn search_global_refuses_a_scope_flag() {
+        for flag in ["--global", "--all-projects"] {
+            let parsed = Cli::try_parse_from(["ai-memory", "search", "needle", flag])
+                .expect("search --global parses");
+            let Command::Search(args) = parsed.command else {
+                panic!("expected search command");
+            };
+            assert!(args.global, "{flag}");
+            for scope in [["--workspace", "acme"], ["--project", "api"]] {
+                let error = Cli::try_parse_from([
+                    "ai-memory",
+                    "search",
+                    "needle",
+                    flag,
+                    scope[0],
+                    scope[1],
+                ])
+                .expect_err("a scope flag conflicts with --global");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "{flag} {scope:?}"
+                );
+            }
+        }
+        let parsed = Cli::try_parse_from(["ai-memory", "search", "needle", "--project", "api"])
+            .expect("scoped search parses");
+        let Command::Search(args) = parsed.command else {
+            panic!("expected search command");
+        };
+        assert!(!args.global);
     }
 
     #[test]

@@ -132,7 +132,9 @@
   chat log. Pass `explain: true` to see why each hit ranked where it
   did in project or explicit-scope retrieval. Cross-project
   `global: true` search uses its separate FTS-only ranker and reports
-  that active stream without per-hit RRF details.
+  that active stream without per-hit RRF details. From the terminal,
+  `ai-memory search --global X` runs that same cross-project search and
+  prints each hit's `workspace/project`, wherever you run it from.
 - **"Remember this permanently."** When something is worth keeping
   beyond auto-captured session logs (a decision, a convention, a
   gotcha), tell the agent "save a permanent note that we standardised

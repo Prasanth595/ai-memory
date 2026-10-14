@@ -11,6 +11,23 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+- Added `ai-memory search --global` (alias `--all-projects`) to search every
+  project from the terminal, as `memory_query(global=true)` does, instead of
+  only the project the current directory resolves to. Each hit is printed
+  with its `workspace/project` before the path, and with `--json` each hit
+  carries `workspace_name` and `project_name`. A global search reads no
+  `.ai-memory.toml` marker, and it cannot be combined with `--workspace` or
+  `--project`. A search without the flag is unchanged. (#1253)
+
+### Changed
+- Changed `GET /admin/search` without `workspace` and `project` to return
+  each hit's `workspace_name` and `project_name`, the shape of
+  `memory_query(global=true)`'s `global_hits`, since a hit from an unnamed
+  project could not be told apart from the same path in another one. These
+  hits no longer carry the page version `id`. A scoped search returns the
+  same fields as before. (#1253)
+
 ## [3.0.0] - 2026-10-13
 
 ### Added

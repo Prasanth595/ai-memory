@@ -46,14 +46,25 @@ async fn make_admin_state(tmp: &TempDir) -> (AdminState, Store) {
 }
 
 async fn seed_page(store: &Store, title: &str, path: &str, body: &str) {
+    seed_page_in(store, "default", "scratch", title, path, body).await;
+}
+
+async fn seed_page_in(
+    store: &Store,
+    workspace: &str,
+    project: &str,
+    title: &str,
+    path: &str,
+    body: &str,
+) {
     let ws = store
         .writer
-        .get_or_create_workspace("default".to_string())
+        .get_or_create_workspace(workspace.to_string())
         .await
         .unwrap();
     let proj = store
         .writer
-        .get_or_create_project(ws, "scratch".to_string(), None)
+        .get_or_create_project(ws, project.to_string(), None)
         .await
         .unwrap();
     let page = NewPage {
@@ -587,6 +598,155 @@ async fn search_rejects_partial_scope_instead_of_global_fallback() {
             .contains("workspace and project must be provided together"),
         "unexpected error body: {body}"
     );
+}
+
+/// Seeds the same path in two projects of two workspaces, each mentioning
+/// "quokka", for the cross-project search tests.
+async fn seed_two_projects(store: &Store) {
+    seed_page_in(
+        store,
+        "default",
+        "api",
+        "API cache",
+        "notes/cache.md",
+        "The quokka cache sits in front of the API.",
+    )
+    .await;
+    seed_page_in(
+        store,
+        "acme",
+        "web",
+        "Web cache",
+        "notes/cache.md",
+        "The quokka cache also fronts the web app.",
+    )
+    .await;
+}
+
+async fn send_for_body(app: axum::Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = String::from_utf8(body_bytes(response).await).unwrap();
+    (status, body)
+}
+
+/// Without a scope the search spans every project, and each hit names its
+/// workspace and project, since the same path can exist in several (#1253).
+/// The scoped search over the same store is the control: one project, and
+/// the hit shape it always had.
+#[tokio::test]
+async fn search_without_scope_spans_projects_and_names_each_hit() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_admin_state(&tmp).await;
+    seed_two_projects(&store).await;
+    let app = admin_router(state);
+
+    let get = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let (status, body) = send_for_body(app.clone(), get("/admin/search?q=quokka")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    let mut found: Vec<(&str, &str, &str, &str)> = hits
+        .iter()
+        .map(|hit| {
+            (
+                hit["workspace_name"].as_str().unwrap(),
+                hit["project_name"].as_str().unwrap(),
+                hit["path"].as_str().unwrap(),
+                hit["title"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        [
+            ("acme", "web", "notes/cache.md", "Web cache"),
+            ("default", "api", "notes/cache.md", "API cache"),
+        ]
+    );
+
+    let (status, body) = send_for_body(
+        app,
+        get("/admin/search?q=quokka&workspace=default&project=api"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "a scoped search stays in its project: {body}"
+    );
+    assert_eq!(hits[0]["title"], "API cache");
+    assert!(
+        hits[0]["id"].is_string(),
+        "scoped hit shape unchanged: {body}"
+    );
+    assert!(
+        hits[0].get("workspace_name").is_none() && hits[0].get("project_name").is_none(),
+        "scoped hit shape unchanged: {body}"
+    );
+}
+
+/// The cross-project search reads every project, so on a multi-user server
+/// it stays behind the root-only `/admin/*` gate: a database user and an
+/// anonymous caller are refused before any hit, project name or title is
+/// rendered, while root gets both projects.
+#[tokio::test]
+async fn search_without_scope_is_root_only_after_multiuser_enablement() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_admin_state(&tmp).await;
+    seed_two_projects(&store).await;
+    store
+        .writer
+        .create_human_user(
+            NewUser {
+                username: "alice".into(),
+                name: None,
+                email: None,
+            },
+            ai_memory_core::UserRole::User,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let app = admin_router(state).layer(axum::middleware::from_fn(
+        |mut request: Request<Body>, next: axum::middleware::Next| async move {
+            let level = match request
+                .headers()
+                .get("x-level")
+                .and_then(|value| value.to_str().ok())
+            {
+                Some("root") => AuthLevel::Root,
+                Some("user") => AuthLevel::User,
+                _ => AuthLevel::Anonymous,
+            };
+            request.extensions_mut().insert(level);
+            request.extensions_mut().insert(ActorContext::anonymous());
+            next.run(request).await
+        },
+    ));
+    for (level, expected) in [
+        (Some("root"), StatusCode::OK),
+        (Some("user"), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        let mut request = Request::builder().uri("/admin/search?q=quokka");
+        if let Some(level) = level {
+            request = request.header("x-level", level);
+        }
+        let (status, body) = send_for_body(app.clone(), request.body(Body::empty()).unwrap()).await;
+        assert_eq!(status, expected, "level {level:?}: {body}");
+        let leaked = ["acme", "Web cache", "API cache", "quokka"]
+            .iter()
+            .any(|sentinel| body.contains(sentinel));
+        assert_eq!(
+            leaked,
+            level == Some("root"),
+            "only root may see cross-project hits (level {level:?}): {body}"
+        );
+    }
 }
 
 #[tokio::test]

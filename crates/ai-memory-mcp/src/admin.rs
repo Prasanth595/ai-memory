@@ -16,7 +16,7 @@
 //! - `GET  /admin/sessions/by-agent` — session counts per agent CLI for one scope.
 //! - `GET  /admin/activity/by-client` — MCP tool-call counts per client (server-wide).
 //! - `GET  /admin/audit-log`      — paginated read of the append-only `audit_log`.
-//! - `GET  /admin/search?q=`      — FTS5 hits against the wiki index.
+//! - `GET  /admin/search?q=`      — FTS5 hits against the wiki index (one project, or all).
 //! - `POST /admin/reorg`          — retro-fit sessions to per-cwd projects.
 //! - `POST /admin/lint`           — run the M8 lint pass.
 //! - `POST /admin/forget-sweep`   — run the M8 retention sweep.
@@ -1688,6 +1688,8 @@ struct SearchQuery {
     /// FTS5 query expression.
     q: String,
     /// Workspace name to search within. Must be provided together with `project`.
+    /// Without both, the search spans every project and each hit carries its
+    /// `workspace_name` and `project_name`.
     #[serde(default)]
     workspace: Option<String>,
     /// Project name to search within. Must be provided together with `workspace`.
@@ -1713,12 +1715,11 @@ async fn handle_search(
     ) {
         (Some(workspace), Some(project)) => {
             match lookup_ws_proj_no_create(&state, workspace, project).await {
-                Ok((ws, proj)) => {
-                    state
-                        .reader
-                        .search_pages_for_project(ws, proj, query.q, limit, None)
-                        .await
-                }
+                Ok((ws, proj)) => state
+                    .reader
+                    .search_pages_for_project(ws, proj, query.q, limit, None)
+                    .await
+                    .map(|hits| serde_json::to_value(&hits)),
                 Err(e) => return e,
             }
         }
@@ -1730,12 +1731,19 @@ async fn handle_search(
                 })),
             );
         }
-        _ => state.reader.search_pages(query.q, limit, OPERATOR).await,
+        // A hit from an unnamed project is of no use to the caller, so this is
+        // the one-query search `memory_query(global=true)` runs, which names
+        // each hit's workspace and project.
+        _ => state
+            .reader
+            .search_pages_with_meta(query.q, limit, None, OPERATOR)
+            .await
+            .map(|hits| serde_json::to_value(&hits)),
     };
     match search_result {
         Ok(hits) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&hits).unwrap_or_else(|_| serde_json::json!([]))),
+            Json(hits.unwrap_or_else(|_| serde_json::json!([]))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
