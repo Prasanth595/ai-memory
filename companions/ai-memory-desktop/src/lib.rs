@@ -353,7 +353,7 @@ mod tests {
             format!("http://127.0.0.1:41234/s/{secret}/extra"),
             "Open the setup page to choose your agents and apply:".to_owned(),
         ] {
-            assert_eq!(setup_url(&bad), None, "{bad}"); // lgtm [rust/cleartext-logging] - test fixture
+            assert_eq!(setup_url(&bad), None, "{bad}");
         }
     }
 

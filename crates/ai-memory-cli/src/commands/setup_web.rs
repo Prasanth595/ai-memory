@@ -169,7 +169,7 @@ pub(crate) async fn serve(
         child_launcher(exe, install_args),
     )?);
     let url = wizard.url();
-    println!("Open the setup page to choose your agents and apply:\n\n  {url}\n"); // lgtm [rust/cleartext-logging] - required one-time loopback URL
+    println!("Open the setup page to choose your agents and apply:\n\n  {url}\n");
     println!(
         "It answers only on this machine. Over SSH, forward the port first \
          (`ssh -L {port}:127.0.0.1:{port} <host>`) and open the same address. \
