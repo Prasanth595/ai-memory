@@ -32,7 +32,7 @@ struct Harness {
 }
 
 async fn browser(store: &Store, name: &str, role: UserRole, must_change: bool) -> Browser {
-    let phc = ai_memory_store::password::hash_password("password-for-test".into())
+    let phc = ai_memory_store::password::hash_password("password-for-test".into()) // lgtm [rust/hard-coded-cryptographic-value] - temp-db test fixture
         .await
         .unwrap();
     let user = store
