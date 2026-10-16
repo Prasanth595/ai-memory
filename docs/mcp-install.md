@@ -3,9 +3,11 @@
 For a custom tool, start with the [programmatic memory guide](programmatic-memory.md).
 It shows direct MCP writes, queries and handoffs without a native hook adapter.
 
-Warp, Cline, Kilo Code, Goose, Qwen Code and OpenHuman have no
+Warp, Kilo Code, Goose, Qwen Code and OpenHuman have no
 `install-mcp` client; their hand-written recipes are in
-[`install.md`](install.md#clients-without-an-install-mcp-writer).
+[`install.md`](install.md#clients-without-an-install-mcp-writer). Cline has
+first-party `install-mcp --client cline` and `install-hooks --agent cline`;
+see [`install.md`](install.md#cline).
 
 > All snippets below default to `http://127.0.0.1:49374` (local server). For a
 > remote server (homelab, LAN box) substitute the appropriate URL AND add an
@@ -177,7 +179,7 @@ metadata.
 > **One-shot tip:** every snippet below is also reachable from the
 > CLI:
 > ```bash
-> ai-memory install-mcp --client gemini-cli   # or cursor / claude-desktop / openclaw / omp / pi / antigravity-cli / grok / kimi-code / kiro-cli / command-code / swival / devin / zero / zcode / copilot-cli / vscode-copilot / zed / muse / dsh / prime-agent
+> ai-memory install-mcp --client gemini-cli   # or cursor / claude-desktop / openclaw / omp / pi / antigravity-cli / grok / kimi-code / kiro-cli / command-code / swival / devin / zero / zcode / copilot-cli / vscode-copilot / zed / muse / dsh / prime-agent / cline
 > ```
 
 ---

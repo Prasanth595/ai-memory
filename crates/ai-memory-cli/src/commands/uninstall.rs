@@ -78,6 +78,7 @@ enum DeleteKind {
     ManagedSkill,
     GrokHandoffRule,
     AutowireSentinel,
+    ClineHook,
 }
 
 impl DeleteKind {
@@ -94,6 +95,7 @@ impl DeleteKind {
             Self::ManagedSkill => "managed Agent Skill",
             Self::GrokHandoffRule => "managed Grok first-turn handoff rule",
             Self::AutowireSentinel => "auto-wire sentinel",
+            Self::ClineHook => "Cline file hook",
         }
     }
 }
@@ -281,6 +283,15 @@ fn build_plan(
                 HookConfigShape::NestedHooksKey,
             ),
         ]);
+        if let Ok(dir) = install_hooks::cline_hooks_dir() {
+            for (event, _) in install_hooks::CLINE_HOOK_EVENTS {
+                push_generated_delete(
+                    &mut plan,
+                    dir.join(format!("{event}.py")),
+                    DeleteKind::ClineHook,
+                );
+            }
+        }
         for (path, shape) in hook_files {
             if !path.exists() {
                 continue;
@@ -443,6 +454,7 @@ fn build_plan(
             KiroCli,
             CommandCode,
             IbmBob,
+            Cline,
             CopilotCli,
             Droid,
             Swival,
@@ -1523,6 +1535,7 @@ fn generated_file_is_ours(path: &Path, kind: DeleteKind) -> bool {
             }),
         DeleteKind::ManagedSkill => content.contains(MANAGED_MARKER),
         DeleteKind::GrokHandoffRule => content.contains(GROK_HANDOFF_RULE_MARKER),
+        DeleteKind::ClineHook => content.contains(install_hooks::CLINE_HOOK_MARKER),
     }
 }
 
@@ -1540,6 +1553,7 @@ fn mcp_servers_path(client: McpClient) -> Option<&'static [&'static str]> {
         | McpClient::KiroCli
         | McpClient::CommandCode
         | McpClient::IbmBob
+        | McpClient::Cline
         | McpClient::CopilotCli
         | McpClient::Droid
         | McpClient::Swival
@@ -2183,6 +2197,20 @@ mod tests {
         assert!(!generated_file_is_ours(&path, DeleteKind::GrokHandoffRule));
         std::fs::write(&path, format!("{GROK_HANDOFF_RULE_MARKER}\n# rule\n")).unwrap();
         assert!(generated_file_is_ours(&path, DeleteKind::GrokHandoffRule));
+    }
+
+    #[test]
+    fn generated_cline_hook_detection_requires_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("TaskStart.py");
+        std::fs::write(&path, "print('third party')\n").unwrap();
+        assert!(!generated_file_is_ours(&path, DeleteKind::ClineHook));
+        std::fs::write(
+            &path,
+            format!("# {}\nprint('ours')\n", install_hooks::CLINE_HOOK_MARKER),
+        )
+        .unwrap();
+        assert!(generated_file_is_ours(&path, DeleteKind::ClineHook));
     }
 
     /// `install-skills --agent copilot-cli` writes `.github/skills` in the

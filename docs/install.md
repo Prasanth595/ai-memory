@@ -20,7 +20,7 @@ RPM, macOS menu bar app). This page covers everything else:
 - [macOS menu bar app](#macos-menu-bar-app)
   (self-contained `.app` + LaunchAgent)
 - [Configuring other agent CLIs](#configuring-other-agent-clis)
-  (Codex, Command Code, IBM Bob, Devin CLI, OpenCode, OpenCode 2, OMP, Pi, Cursor, Claude Desktop, Gemini CLI, Antigravity CLI, Grok Build CLI, GitHub Copilot CLI, Factory Droid, Meta Muse Code, CodeBuddy Code, Hermes Agent, Zero, ZCode, Kimi Code, Kiro CLI, Pool, OpenClaw, VS Code Copilot, Zed, and MCP-only recipes for Warp, Cline, Kilo Code, Goose, Qwen Code and OpenHuman)
+  (Codex, Command Code, IBM Bob, Cline, Devin CLI, OpenCode, OpenCode 2, OMP, Pi, Cursor, Claude Desktop, Gemini CLI, Antigravity CLI, Grok Build CLI, GitHub Copilot CLI, Factory Droid, Meta Muse Code, CodeBuddy Code, Hermes Agent, Zero, ZCode, Kimi Code, Kiro CLI, Pool, OpenClaw, VS Code Copilot, Zed, and MCP-only recipes for Warp, Kilo Code, Goose, Qwen Code and OpenHuman)
 - [Installing hooks without docker](#installing-hooks-without-docker)
   (curl-based installer)
 - [Running ai-memory without docker](#running-ai-memory-without-docker)
@@ -1546,6 +1546,42 @@ Managed `ai-memory run ibm-bob` resume is not supported because Bob does not
 document a stable native transcript store. See [the IBM Bob MCP and hook
 details](mcp-install.md#ibm-bob).
 
+### Cline
+
+Cline CLI and the VS Code extension share one MCP file and a directory of
+file hooks. Install both:
+
+```bash
+ai-memory install-mcp --client cline --apply \
+    --server-url "https://memory.example/mcp" \
+    --auth-token "$TOKEN"
+ai-memory install-hooks --agent cline --apply \
+    --server-url "https://memory.example" \
+    --auth-token "$TOKEN"
+```
+
+MCP is merged into `~/.cline/data/settings/cline_mcp_settings.json` (override
+with `CLINE_MCP_SETTINGS_PATH`) as a `type: "streamableHttp"` entry. Without
+`type`, Cline uses legacy SSE and 405s against Streamable HTTP `/mcp`. In the
+VS Code extension, open **MCP Servers > Configure > Configure MCP Servers**.
+Cline does not document environment-variable expansion in `headers`, so a
+token-file install uses the session-less `mcp-bridge` stdio entry; pass
+`--auth-token` to write a Bearer header.
+
+Hooks are Python wrappers in `~/.cline/hooks/` (`$CLINE_HOOKS_DIR`, or
+`$CLINE_DIR/hooks`). Pass `--config-file` to write a different directory.
+TaskStart / TaskResume map to session-start, UserPromptSubmit to user-prompt,
+PreToolUse / PostToolUse to the tool events, TaskComplete / TaskError /
+TaskCancel to stop, and SessionShutdown to session-end. PreCompact is
+unwired. TaskStart is fire-and-forget, so the pending handoff arrives on
+UserPromptSubmit as `contextModification`. Restart the Cline hub after
+install — it snapshots hook files at startup. `yolo: true` disables every
+hook. A crashed hub still needs `ai-memory finalize-session --agent cline`.
+There is no `ai-memory run cline` adapter.
+
+Documented against Cline extension 4.1.23 and CLI 3.0.70. Source:
+<https://docs.cline.bot/mcp/mcp-overview>.
+
 ### Kiro CLI
 
 Kiro CLI has one MCP surface and two incompatible lifecycle-hook formats.
@@ -2381,31 +2417,8 @@ Sources: <https://docs.warp.dev/agents/capabilities/mcp>,
 
 ##### Cline
 
-The Cline CLI reads `~/.cline/data/settings/cline_mcp_settings.json`
-(override the path with `CLINE_MCP_SETTINGS_PATH`). In the VS Code extension,
-open the **MCP Servers** icon, then **Configure > Configure MCP Servers**, and
-edit the same `mcpServers` map. Set `type` to `streamableHttp`: without it,
-Cline falls back to the legacy SSE transport.
-
-```json
-{
-  "mcpServers": {
-    "ai-memory": {
-      "type": "streamableHttp",
-      "url": "http://127.0.0.1:49374/mcp",
-      "headers": { "Authorization": "Bearer <token>" },
-      "disabled": false
-    }
-  }
-}
-```
-
-Cline does not document environment-variable expansion in `headers`. Leave
-out `headers` when the server has no bearer token; in that case the CLI can
-write the entry with
-`cline mcp add ai-memory http://127.0.0.1:49374/mcp --transport http`.
-Documented for the Cline extension 4.1.23 and CLI 3.0.70.
-Source: <https://docs.cline.bot/mcp/mcp-overview>.
+First-party: see [Cline](#cline) above (`install-mcp --client cline` and
+`install-hooks --agent cline`).
 
 ##### Kilo Code
 

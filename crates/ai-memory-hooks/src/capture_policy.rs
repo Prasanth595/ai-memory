@@ -231,6 +231,21 @@ pub(crate) fn tool_payload_fields(agent: AgentKind, raw: &Value) -> Option<(&str
         // reaches a hook payload (verified against the 0.240.0 tool schemas,
         // #1240).
         AgentKind::Droid => (object.get("tool_name")?.as_str()?, None),
+        // Cline file hooks nest the tool under `preToolUse` / `postToolUse`
+        // (`toolName`, `parameters`, `result`). A CLI-shaped `tool_call`
+        // envelope (`name` / `input`) is accepted as a fallback.
+        AgentKind::Cline => {
+            let tool = object
+                .get("preToolUse")
+                .or_else(|| object.get("postToolUse"))
+                .or_else(|| object.get("tool_call"))?;
+            (
+                tool.get("toolName")
+                    .or_else(|| tool.get("name"))
+                    .and_then(Value::as_str)?,
+                None,
+            )
+        }
         _ => return None,
     };
     Some((name, id))
@@ -250,6 +265,17 @@ pub(crate) fn tool_observation_metadata(
     let has_args = !require_input
         || match agent {
             AgentKind::AntigravityCli => object.get("toolCall")?.get("args").is_some(),
+            AgentKind::Cline => {
+                object
+                    .get("preToolUse")
+                    .or_else(|| object.get("postToolUse"))
+                    .and_then(|tool| tool.get("parameters"))
+                    .is_some()
+                    || object
+                        .get("tool_call")
+                        .and_then(|call| call.get("input"))
+                        .is_some()
+            }
             _ => object
                 .get(
                     if matches!(
@@ -1120,6 +1146,21 @@ fn extract(agent: AgentKind, raw: &Value) -> Extracted<'_> {
             .get("tool_name")
             .and_then(Value::as_str)
             .map(|name| (name, object.get("tool_input"))),
+        AgentKind::Cline => object
+            .get("preToolUse")
+            .or_else(|| object.get("postToolUse"))
+            .and_then(Value::as_object)
+            .and_then(|tool| {
+                Some((
+                    tool.get("toolName")?.as_str()?,
+                    tool.get("parameters"),
+                ))
+            })
+            .or_else(|| {
+                object.get("tool_call").and_then(Value::as_object).and_then(|call| {
+                    Some((call.get("name")?.as_str()?, call.get("input")))
+                })
+            }),
         AgentKind::OpenCode | AgentKind::Omp | AgentKind::Pi | AgentKind::OpenClaw => object
             .get("tool")
             .and_then(Value::as_str)
@@ -1227,6 +1268,18 @@ fn extract(agent: AgentKind, raw: &Value) -> Extracted<'_> {
 /// [`family`] plus tool names only one agent is documented to use, so a
 /// same-named tool of another agent keeps its current classification.
 fn agent_family(agent: AgentKind, name: &str) -> ToolFamily {
+    if agent == AgentKind::Cline {
+        // Cline 3.x / extension 4.x tool names (issue #1335). Shared names
+        // such as `apply_patch` and `read_file` fall through to [`family`].
+        match name.to_ascii_lowercase().as_str() {
+            "read_files" | "editor" | "replace_in_file" => return ToolFamily::File,
+            "search_codebase" => return ToolFamily::SearchList,
+            "run_commands" | "fetch_web_content" | "execute_command" => {
+                return ToolFamily::NonFile;
+            }
+            _ => {}
+        }
+    }
     if agent == AgentKind::CopilotCli {
         // GitHub Copilot CLI's runtime tool names: `view` reads a file or
         // directory, `create` writes one, `str_replace_editor` edits, each
@@ -1571,6 +1624,17 @@ fn extract_paths(name: &str, args: &Value) -> Option<Vec<String>> {
     // Gemini CLI `read_many_files` names its globs in `include` (`paths`,
     // which `direct_paths` reads, before a rename). `exclude` only narrows
     // the read, so it is not a candidate.
+    if name.eq_ignore_ascii_case("read_files")
+        && let Some(files) = object.get("files")
+    {
+        let entries = files.as_array()?;
+        if paths.len().checked_add(entries.len())? > MAX_CAPTURE_CANDIDATES {
+            return None;
+        }
+        for entry in entries {
+            paths.push(entry.as_str()?.to_owned());
+        }
+    }
     if name.eq_ignore_ascii_case("read_many_files")
         && let Some(include) = object.get("include")
     {
@@ -4849,6 +4913,98 @@ mod tests {
                 .disposition(),
             CaptureDisposition::Keep,
             "without the Bob mapping the call is not recognized"
+        );
+    }
+
+    /// Cline's nested `preToolUse.toolName` / `parameters` must honour
+    /// `[capture] ignore_paths`. A foreign agent carrying the same JSON stays
+    /// on the capture-only path.
+    #[test]
+    fn cline_tool_calls_honor_capture_exclusions() {
+        let policy = CapturePolicy::resolve(
+            CaptureSource::Parsed(&CaptureConfig {
+                ignore_paths: vec!["secret/**".into()],
+            }),
+            "/repo",
+            None,
+        );
+        let call = |name: &str, parameters: serde_json::Value| {
+            json!({
+                "taskId": "task-1",
+                "workspaceRoots": ["/repo"],
+                "preToolUse": {
+                    "toolName": name,
+                    "parameters": parameters,
+                }
+            })
+        };
+
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Cline,
+                    &call("read_files", json!({"files": ["secret/token"]})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Drop
+        );
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Cline,
+                    &call("editor", json!({"path": "secret/token"})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Drop
+        );
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Cline,
+                    &call("replace_in_file", json!({"path": "secret/a.rs"})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Drop
+        );
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Cline,
+                    &call("read_files", json!({"files": ["src/lib.rs"]})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Keep
+        );
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Cline,
+                    &call("run_commands", json!({"command": "ls"})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Keep
+        );
+        assert_eq!(
+            policy
+                .inspect(
+                    AgentKind::Other,
+                    &call("read_files", json!({"files": ["secret/token"]})),
+                    "/repo"
+                )
+                .protocol()
+                .disposition(),
+            CaptureDisposition::Keep,
+            "without the Cline mapping the call is not recognized"
         );
     }
 

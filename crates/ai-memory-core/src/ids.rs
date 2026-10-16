@@ -305,6 +305,11 @@ pub enum AgentKind {
     /// (`@deepseek-ai/dsh-hooks-claude-code`) fires Claude Code-shaped
     /// payloads for seven events (no `SessionEnd` or `PreCompact`).
     Dsh,
+    /// Cline CLI / IDE (`cline`). File hooks under `~/.cline/hooks/` send
+    /// Cline's own JSON (`taskId`, `workspaceRoots`, `preToolUse.toolName`).
+    /// `agent_start` is fire-and-forget, so the handoff is delivered on
+    /// `UserPromptSubmit` as `contextModification` (#1335).
+    Cline,
     /// Anything else (manual capture, future agents).
     Other,
 }
@@ -315,7 +320,7 @@ impl AgentKind {
     /// CHECK constraint accepts every kind (the Zero integration shipped
     /// with the enum variant but without the V26 migration and only a
     /// live test caught it). Extend together with the enum.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::ClaudeCode,
         Self::Codex,
         Self::OpenCode,
@@ -343,6 +348,7 @@ impl AgentKind {
         Self::CodeBuddy,
         Self::IbmBob,
         Self::Dsh,
+        Self::Cline,
         Self::Other,
     ];
 
@@ -377,6 +383,7 @@ impl AgentKind {
             Self::CodeBuddy => "codebuddy",
             Self::IbmBob => "ibm-bob",
             Self::Dsh => "dsh",
+            Self::Cline => "cline",
             Self::Other => "other",
         }
     }
@@ -414,6 +421,7 @@ impl AgentKind {
             "codebuddy" | "code-buddy" => Self::CodeBuddy,
             "ibm-bob" | "bob" => Self::IbmBob,
             "dsh" | "deepseek-harness" | "deepseek_harness" => Self::Dsh,
+            "cline" => Self::Cline,
             _ => Self::Other,
         }
     }
@@ -484,19 +492,23 @@ impl AgentKind {
                 // DSH's bridge runs SessionStart detached, so its stdout
                 // cannot be relied on to deliver a fetched handoff.
                 | Self::Dsh
+                // Cline's `agent_start` / `agent_resume` file hooks are
+                // fire-and-forget unless `blockingRunStartHooks` is on, so
+                // stdout (and a destructive GET /handoff) would be discarded.
+                | Self::Cline
                 | Self::Other
         )
     }
 
     /// Whether this agent injects the native `user-prompt` (UserPromptSubmit)
-    /// hook's stdout into the upcoming turn as context. Only Kimi Code does:
-    /// its `SessionStart` stdout is discarded (see
-    /// [`Self::session_start_injects_handoff`]), while `UserPromptSubmit`
-    /// stdout is prepended to the turn as a user message with
-    /// `origin: {kind: 'hook_result'}` (`agent/turn/index.ts`,
-    /// `session/hooks/user-prompt.ts`, verified in the v0.28.1 source).
-    /// Empty stdout injects nothing, so the hook prints the raw handoff body
-    /// or nothing at all — never a JSON envelope.
+    /// hook's stdout into the upcoming turn as context. Kimi Code and Cline
+    /// do: their `SessionStart` stdout is discarded (see
+    /// [`Self::session_start_injects_handoff`]). Kimi prepends raw stdout to
+    /// the turn as a user message with `origin: {kind: 'hook_result'}`
+    /// (`agent/turn/index.ts`, `session/hooks/user-prompt.ts`, verified in
+    /// the v0.28.1 source). Cline file hooks read `contextModification` from
+    /// JSON stdout (`sdk/packages/core/src/hooks/subprocess.ts`). Empty
+    /// stdout injects nothing.
     ///
     /// Grok Build also ignores `SessionStart` stdout, and it is not in this
     /// set. An allowing `UserPromptSubmit` discards stdout and has no
@@ -506,7 +518,7 @@ impl AgentKind {
     /// [`Self::post_tool_injects_handoff`].
     #[must_use]
     pub fn user_prompt_injects_handoff(self) -> bool {
-        matches!(self, Self::KimiCode)
+        matches!(self, Self::KimiCode | Self::Cline)
     }
 
     /// Whether this agent adds a `UserPromptSubmit` hook's
@@ -729,6 +741,25 @@ mod tests {
     }
 
     #[test]
+    fn agent_kind_cline_round_trips_and_injects_handoff_on_user_prompt() {
+        assert_eq!(AgentKind::Cline.as_str(), "cline");
+        assert_eq!(AgentKind::from_wire("cline"), AgentKind::Cline);
+        assert_eq!(
+            serde_json::to_string(&AgentKind::Cline).unwrap(),
+            "\"cline\""
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentKind>("\"cline\"").unwrap(),
+            AgentKind::Cline
+        );
+        assert_eq!(AgentKind::from_wire("cline-2"), AgentKind::Other);
+        assert!(!AgentKind::Cline.session_start_injects_handoff());
+        assert!(AgentKind::Cline.user_prompt_injects_handoff());
+        assert!(!AgentKind::Cline.post_tool_injects_handoff());
+        assert!(!AgentKind::Cline.reuses_session_id_after_end());
+    }
+
+    #[test]
     fn agent_kind_copilot_cli_round_trips_without_claiming_handoff_delivery() {
         assert_eq!(AgentKind::CopilotCli.as_str(), "copilot-cli");
         assert_eq!(AgentKind::from_wire("copilot-cli"), AgentKind::CopilotCli);
@@ -940,11 +971,11 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_handoff_injection_is_kimi_only() {
+    fn user_prompt_handoff_injection_is_kimi_and_cline() {
         for agent in AgentKind::ALL {
             assert_eq!(
                 agent.user_prompt_injects_handoff(),
-                agent == AgentKind::KimiCode,
+                matches!(agent, AgentKind::KimiCode | AgentKind::Cline),
                 "{}",
                 agent.as_str()
             );

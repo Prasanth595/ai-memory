@@ -12,6 +12,21 @@ version in [`docs/changelog/`](docs/changelog/):
 ## [Unreleased]
 
 ### Added
+- Added first-party Cline CLI / IDE support. `install-mcp --client cline
+  --apply` merges a `type: "streamableHttp"` entry into
+  `~/.cline/data/settings/cline_mcp_settings.json` (or
+  `$CLINE_MCP_SETTINGS_PATH`). Without `type`, Cline uses legacy SSE and
+  405s against Streamable HTTP `/mcp`. `install-hooks --agent cline
+  --apply` writes Python file hooks under `~/.cline/hooks/`
+  (`$CLINE_HOOKS_DIR` or `$CLINE_DIR/hooks`), mapping TaskStart /
+  TaskResume, UserPromptSubmit, PreToolUse, PostToolUse, TaskComplete /
+  TaskError / TaskCancel, and SessionShutdown onto native
+  `ai-memory hook --agent cline` events. TaskStart is fire-and-forget, so
+  the pending handoff is delivered on UserPromptSubmit as
+  `contextModification`. Capture exclusions honour Cline's nested
+  `preToolUse` / `postToolUse` tool fields. There is no `ai-memory run
+  cline` adapter. Restart the Cline hub after install; `yolo: true`
+  disables every hook. (#1335)
 - Added opt-in `[sessions] idle_end_after_hours` (env
   `AI_MEMORY_SESSIONS__IDLE_END_AFTER_HOURS`; default `0`, off; range
   `1..=8760`). When it is set, the `serve` maintenance tick ends open sessions

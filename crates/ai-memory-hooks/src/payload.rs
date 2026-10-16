@@ -513,6 +513,7 @@ pub fn parse_agent(s: &str) -> AgentKind {
 #[must_use]
 pub fn user_prompt_text(raw: &serde_json::Value) -> Option<String> {
     extract_content(raw, &["prompt", "message", "text"])
+        .or_else(|| extract_string_path(raw, &[&["userPromptSubmit", "prompt"]]))
 }
 
 /// Identify the harness from the payload itself when it carries an
@@ -555,6 +556,7 @@ pub fn hook_payload_context(raw: &serde_json::Value) -> HookPayloadContext {
             "sessionID",
             "session",
             "conversationId",
+            "taskId",
         ],
     )
     .or_else(|| {
@@ -573,13 +575,19 @@ pub fn hook_payload_context(raw: &serde_json::Value) -> HookPayloadContext {
         )
     });
     let cwd = extract_string(raw, &["cwd", "current_dir", "working_dir", "directory"])
-        .or_else(|| extract_first_string_array_item(raw, &["workspacePaths", "workspace_roots"]))
+        .or_else(|| {
+            extract_first_string_array_item(
+                raw,
+                &["workspacePaths", "workspace_roots", "workspaceRoots"],
+            )
+        })
         .or_else(|| {
             extract_string_path(
                 raw,
                 &[
                     &["path", "cwd"],
                     &["info", "directory"],
+                    &["workspaceInfo", "rootPath"],
                     &["properties", "info", "directory"],
                     &["event", "properties", "info", "directory"],
                     &["payload", "path", "cwd"],
@@ -850,6 +858,9 @@ const fn closed_tool_agent(agent: AgentKind) -> bool {
             // forwards Claude Code's snake_case tool fields for PreToolUse /
             // PostToolUse.
             | AgentKind::Dsh
+            // Cline file hooks nest tool fields under `preToolUse` /
+            // `postToolUse` (`toolName`, `parameters`, `result`).
+            | AgentKind::Cline
     )
 }
 
@@ -942,6 +953,10 @@ fn safe_tool_body(
                 raw.pointer("/extra/result")
                     .and_then(value_to_text)
                     .or_else(|| raw.pointer("/extra/error_message").and_then(value_to_text))
+                    .or_else(|| extract_content(raw, &["error"]))
+            } else if agent == AgentKind::Cline {
+                raw.pointer("/postToolUse/result")
+                    .and_then(value_to_text)
                     .or_else(|| extract_content(raw, &["error"]))
             } else {
                 extract_content(raw, &["tool_response", "tool_output", "output", "result"])
@@ -1093,11 +1108,23 @@ fn best_title_hint(event: HookEvent, raw: &serde_json::Value) -> Option<String> 
             // Kimi Code sends `prompt` as content blocks
             // (`[{"type":"text","text":...}]`); `extract_content` flattens
             // them and returns identical values for plain-string agents.
-            extract_content(raw, &["prompt", "message", "text"]).and_then(first_line)
+            // Cline nests the prompt at `userPromptSubmit.prompt`.
+            extract_content(raw, &["prompt", "message", "text"])
+                .or_else(|| extract_string_path(raw, &[&["userPromptSubmit", "prompt"]]))
+                .and_then(first_line)
         }
         HookEvent::PreToolUse | HookEvent::PostToolUse => {
             extract_string(raw, &["tool", "tool_name", "name"])
-                .or_else(|| extract_string_path(raw, &[&["toolCall", "name"]]))
+                .or_else(|| {
+                    extract_string_path(
+                        raw,
+                        &[
+                            &["toolCall", "name"],
+                            &["preToolUse", "toolName"],
+                            &["postToolUse", "toolName"],
+                        ],
+                    )
+                })
                 .or_else(|| {
                     extract_scalar_string(raw, &["stepIdx"]).map(|step| format!("step {step}"))
                 })
@@ -1180,7 +1207,8 @@ fn value_to_text(value: &serde_json::Value) -> Option<String> {
 
 fn best_body_excerpt(event: HookEvent, raw: &serde_json::Value) -> Option<String> {
     match event {
-        HookEvent::UserPrompt => extract_content(raw, &["prompt", "message", "text"]),
+        HookEvent::UserPrompt => extract_content(raw, &["prompt", "message", "text"])
+            .or_else(|| extract_string_path(raw, &[&["userPromptSubmit", "prompt"]])),
         HookEvent::PostToolUse => {
             let tool = extract_string(raw, &["tool", "tool_name", "name"])
                 .or_else(|| extract_string_path(raw, &[&["toolCall", "name"]]))
@@ -2344,6 +2372,103 @@ mod tests {
                 ..Default::default()
             },
             raw,
+        );
+        assert_eq!(unknown.agent, AgentKind::Other);
+        assert!(unknown.title_hint.is_none());
+        assert!(unknown.body_excerpt.is_none());
+    }
+
+    /// Cline file hooks send `taskId`, `workspaceRoots` / `workspaceInfo.rootPath`,
+    /// a nested `userPromptSubmit.prompt`, and nested `preToolUse`/`postToolUse`
+    /// tool fields. Closed-schema tool observations must use those, not the
+    /// capture-only path.
+    #[test]
+    fn cline_payload_maps_task_workspace_prompt_and_nested_tools() {
+        let start = serde_json::json!({
+            "taskId": "task-abc",
+            "workspaceRoots": ["/repo"],
+            "workspaceInfo": {"rootPath": "/ignored"}
+        });
+        let start_env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "session-start".into(),
+                agent: Some("cline".into()),
+                ..Default::default()
+            },
+            start,
+        );
+        assert_eq!(start_env.agent, AgentKind::Cline);
+        assert_eq!(start_env.session_id.as_deref(), Some("task-abc"));
+        assert_eq!(start_env.cwd.as_deref(), Some("/repo"));
+
+        let nested_cwd = serde_json::json!({
+            "taskId": "task-nested",
+            "workspaceInfo": {"rootPath": "/from-info"}
+        });
+        let nested_env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "session-start".into(),
+                agent: Some("cline".into()),
+                ..Default::default()
+            },
+            nested_cwd,
+        );
+        assert_eq!(nested_env.cwd.as_deref(), Some("/from-info"));
+
+        let prompt = serde_json::json!({
+            "taskId": "task-abc",
+            "userPromptSubmit": {"prompt": "remember the cline token"}
+        });
+        assert_eq!(
+            user_prompt_text(&prompt).as_deref(),
+            Some("remember the cline token")
+        );
+        let prompt_env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "user-prompt".into(),
+                agent: Some("cline".into()),
+                ..Default::default()
+            },
+            prompt,
+        );
+        assert_eq!(
+            prompt_env.title_hint.as_deref(),
+            Some("remember the cline token")
+        );
+        assert_eq!(
+            prompt_env.body_excerpt.as_deref(),
+            Some("remember the cline token")
+        );
+
+        let tool = serde_json::json!({
+            "taskId": "task-abc",
+            "workspaceRoots": ["/repo"],
+            "postToolUse": {
+                "toolName": "read_files",
+                "parameters": {"files": ["src/lib.rs"]},
+                "result": "file contents"
+            }
+        });
+        let tool_env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "post-tool-use".into(),
+                agent: Some("cline".into()),
+                ..Default::default()
+            },
+            tool.clone(),
+        );
+        assert_eq!(tool_env.title_hint.as_deref(), Some("tool file"));
+        let body = tool_env.body_excerpt.expect("structured tool body");
+        assert!(body.starts_with("tool_family: file\n"), "{body}");
+        assert!(body.contains("\n---\nfile contents"), "{body}");
+
+        let unknown = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "post-tool-use".into(),
+                agent: Some("cline-2".into()),
+                ..Default::default()
+            },
+            tool,
         );
         assert_eq!(unknown.agent, AgentKind::Other);
         assert!(unknown.title_hint.is_none());

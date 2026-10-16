@@ -1021,6 +1021,13 @@ pub(crate) fn run_with_opencode_dialect_and_mcp_path(
                     resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent, &config.data_dir)?;
                 apply_to_dsh(&hooks_dir, &server_url, auth, &config.data_dir, &args)
             }
+            AgentChoice::Cline => {
+                let dir = match &args.config_file {
+                    Some(path) => path.clone(),
+                    None => cline_hooks_dir()?,
+                };
+                apply_to_cline(&dir, &server_url, auth, &config.data_dir, &args)
+            }
         };
     }
     let strategy = args.project_strategy.and_then(ProjectStrategyArg::baked);
@@ -1184,6 +1191,7 @@ pub(crate) fn run_with_opencode_dialect_and_mcp_path(
                 resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent, &config.data_dir)?;
             render_dsh(&hooks_dir, &server_url, auth, &config.data_dir, strategy)
         }
+        AgentChoice::Cline => render_cline(&server_url, auth, &config.data_dir, strategy),
     }
 }
 
@@ -1384,6 +1392,9 @@ fn existing_agent_config(args: &InstallHooksArgs) -> Option<String> {
             // data dir; it carries no baked strategy worth re-reading
             // (same reason Pool returns None).
             AgentChoice::Dsh => return None,
+            // Cline file hooks live under ~/.cline/hooks as one Python file
+            // per event; there is no single config to re-read a strategy from.
+            AgentChoice::Cline => return None,
         }
     };
     std::fs::read_to_string(path).ok()
@@ -1646,9 +1657,13 @@ fn infer_installed_mcp_config(
         // Codex uses `http_headers`; Grok uses `headers`. The shared TOML
         // inferencer accepts both.
         McpClient::Codex => Ok(infer_toml_mcp_config(&content)),
-        McpClient::CommandCode | McpClient::CopilotCli | McpClient::IbmBob => Ok(
-            infer_json_mcp_config(&content, &["mcpServers", "ai-memory"], "url"),
-        ),
+        McpClient::CommandCode | McpClient::CopilotCli | McpClient::IbmBob | McpClient::Cline => {
+            Ok(infer_json_mcp_config(
+                &content,
+                &["mcpServers", "ai-memory"],
+                "url",
+            ))
+        }
         // `install-mcp --client droid` writes the bearer as the
         // `${AI_MEMORY_AUTH_TOKEN}` reference Droid expands, not the token,
         // so only the URL is inferred from it.
@@ -1812,6 +1827,7 @@ pub(crate) fn mcp_client_for_agent(agent: AgentChoice) -> Option<McpClient> {
         // No first-party CodeBuddy MCP installer in this change.
         AgentChoice::CodeBuddy => None,
         AgentChoice::IbmBob => Some(McpClient::IbmBob),
+        AgentChoice::Cline => Some(McpClient::Cline),
         // DSH has no fixed MCP config file to scrape a server URL or token
         // from (install-mcp --client dsh is print-only), so pass explicit
         // --server-url / --auth-token instead.
@@ -7378,6 +7394,310 @@ fn render_ibm_bob(
     Ok(())
 }
 
+/// Marker baked into every generated Cline Python hook so uninstall can
+/// delete only files ai-memory owns.
+pub(crate) const CLINE_HOOK_MARKER: &str = "ai-memory-managed: cline-hook";
+
+/// Cline file-hook names mapped onto ai-memory lifecycle events (#1335).
+/// `PreCompact` is unwired: Cline fires it, but a compaction recap is not
+/// claimed until a live capture shows the payload.
+pub(crate) const CLINE_HOOK_EVENTS: &[(&str, &str)] = &[
+    ("TaskStart", "session-start"),
+    ("TaskResume", "session-start"),
+    ("UserPromptSubmit", "user-prompt"),
+    ("PreToolUse", "pre-tool-use"),
+    ("PostToolUse", "post-tool-use"),
+    ("TaskComplete", "stop"),
+    ("TaskError", "stop"),
+    ("TaskCancel", "stop"),
+    ("SessionShutdown", "session-end"),
+];
+
+const CLINE_INSTALL_NOTES: &str = "\
+# NOTE: Cline's agent_start / agent_resume file hooks are fire-and-forget,
+#       so the pending handoff is delivered on UserPromptSubmit as
+#       contextModification. Restart the Cline hub after install — it
+#       snapshots hook files at startup. `yolo: true` disables every hook.
+# NOTE: SessionShutdown maps to session-end. TaskComplete / TaskError /
+#       TaskCancel map to stop (a turn boundary); a crashed hub still
+#       needs `ai-memory finalize-session --agent cline`.
+# NOTE: There is no `ai-memory run cline` adapter.
+";
+
+/// `~/.cline/hooks`, or `$CLINE_HOOKS_DIR`, or `$CLINE_DIR/hooks`.
+pub(crate) fn cline_hooks_dir() -> Result<PathBuf> {
+    cline_hooks_dir_in(
+        std::env::var_os("CLINE_HOOKS_DIR"),
+        std::env::var_os("CLINE_DIR"),
+        home_dir(),
+    )
+}
+
+fn cline_hooks_dir_in(
+    hooks_override: Option<std::ffi::OsString>,
+    cline_dir: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(path) = hooks_override.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(dir) = cline_dir.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(dir).join("hooks"));
+    }
+    Ok(home
+        .context("could not locate $HOME for ~/.cline/hooks")?
+        .join(".cline")
+        .join("hooks"))
+}
+
+/// `--apply` for Cline: write one Python wrapper per event under `dir`.
+fn apply_to_cline(
+    dir: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+    args: &InstallHooksArgs,
+) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let strategy = args.project_strategy.and_then(ProjectStrategyArg::baked);
+    let mut written = 0_usize;
+    let mut skipped = 0_usize;
+    for (event, hook_event) in CLINE_HOOK_EVENTS {
+        let path = dir.join(format!("{event}.py"));
+        let script = cline_hook_script(
+            event,
+            hook_event,
+            server_url,
+            auth_token,
+            Some(data_dir),
+            strategy,
+        );
+        match write_cline_hook_file(&path, script.as_bytes())? {
+            ClineWrite::Wrote => written += 1,
+            ClineWrite::Unchanged => {}
+            ClineWrite::SkippedForeign => {
+                skipped += 1;
+                eprintln!(
+                    "[ai-memory] skipped {} because it is not an ai-memory Cline hook",
+                    path.display()
+                );
+            }
+        }
+    }
+    eprintln!(
+        "✓ Cline hooks in {} ({written} written, {skipped} skipped)",
+        dir.display()
+    );
+    print!("{CLINE_INSTALL_NOTES}");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClineWrite {
+    Wrote,
+    Unchanged,
+    SkippedForeign,
+}
+
+/// Write one Cline hook file. Owner-only on Unix (the script may embed a
+/// bearer). A final-component symlink is refused rather than followed.
+fn write_cline_hook_file(path: &Path, content: &[u8]) -> Result<ClineWrite> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            anyhow::bail!("opening Cline hook {}: path is a symlink", path.display());
+        }
+        Ok(_) => {
+            let existing = fs::read(path)
+                .with_context(|| format!("reading existing Cline hook {}", path.display()))?;
+            if existing == content {
+                return Ok(ClineWrite::Unchanged);
+            }
+            if !existing
+                .windows(CLINE_HOOK_MARKER.len())
+                .any(|window| window == CLINE_HOOK_MARKER.as_bytes())
+            {
+                return Ok(ClineWrite::SkippedForeign);
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("reading existing Cline hook {}", path.display()));
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o700).custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("opening Cline hook {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing Cline hook {}", path.display()))?;
+    }
+    file.write_all(content)
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", path.display()))?;
+    Ok(ClineWrite::Wrote)
+}
+
+fn render_cline(
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+    project_strategy: Option<&str>,
+) -> Result<()> {
+    let dir = cline_hooks_dir().unwrap_or_else(|_| PathBuf::from("~/.cline/hooks"));
+    print!(
+        "{}",
+        render_cline_output(
+            &dir,
+            server_url,
+            auth_token,
+            Some(data_dir),
+            project_strategy,
+        )
+    );
+    Ok(())
+}
+
+/// Print-only Cline hook preview, shared by `install-hooks` and `setup-agent`.
+pub(crate) fn render_cline_output(
+    dir: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: Option<&Path>,
+    project_strategy: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Cline CLI / IDE file hooks. Re-run with --apply to write them to\n");
+    out.push_str(&format!(
+        "# {} as <Event>.py wrappers around the native\n",
+        dir.display()
+    ));
+    out.push_str("# `ai-memory hook --agent cline` command.\n");
+    out.push_str(&format!("# AI-memory server URL: {server_url}\n"));
+    if auth_token.is_some() {
+        out.push_str("# Auth: this printed snippet embeds the token in each hook script —\n");
+        out.push_str("#       treat ~/.cline/hooks as sensitive (chmod 700). `--apply` stores\n");
+        out.push_str(
+            "#       the token under the data dir instead when the secure path is used.\n",
+        );
+    }
+    out.push_str(CLINE_INSTALL_NOTES);
+    out.push('\n');
+    let sample = cline_hook_script(
+        "UserPromptSubmit",
+        "user-prompt",
+        server_url,
+        auth_token,
+        data_dir,
+        project_strategy,
+    );
+    out.push_str("# Sample (UserPromptSubmit.py):\n");
+    out.push_str(&sample);
+    out
+}
+
+fn cline_hook_script(
+    event_file: &str,
+    hook_event: &str,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: Option<&Path>,
+    project_strategy: Option<&str>,
+) -> String {
+    let exe = hook_embedded_exe_path();
+    let data_dir = data_dir.map(|path| path.to_string_lossy().into_owned());
+    format!(
+        "#!/usr/bin/env python3\n\
+         # {marker}\n\
+         # Event: {event_file} -> {hook_event}\n\
+         \"\"\"Forward Cline JSON stdin to ai-memory's native hook command.\"\"\"\n\
+         from __future__ import annotations\n\
+         \n\
+         import json\n\
+         import subprocess\n\
+         import sys\n\
+         \n\
+         EXE = {exe}\n\
+         EVENT = {hook_event}\n\
+         SERVER_URL = {server_url}\n\
+         AUTH_TOKEN = {auth_token}\n\
+         DATA_DIR = {data_dir}\n\
+         PROJECT_STRATEGY = {project_strategy}\n\
+         TIMEOUT_S = 8\n\
+         \n\
+         def main() -> None:\n\
+         \n    payload = sys.stdin.read()\n\
+         \n    cmd = [EXE]\n\
+         \n    if DATA_DIR:\n\
+         \n        cmd.extend([\"--data-dir\", DATA_DIR])\n\
+         \n    cmd.extend([\"hook\", \"--event\", EVENT, \"--agent\", \"cline\", \"--server-url\", SERVER_URL])\n\
+         \n    if AUTH_TOKEN:\n\
+         \n        cmd.extend([\"--auth-token\", AUTH_TOKEN])\n\
+         \n    if PROJECT_STRATEGY:\n\
+         \n        cmd.extend([\"--project-strategy\", PROJECT_STRATEGY])\n\
+         \n    try:\n\
+         \n        result = subprocess.run(\n\
+         \n            cmd,\n\
+         \n            input=payload,\n\
+         \n            capture_output=True,\n\
+         \n            text=True,\n\
+         \n            timeout=TIMEOUT_S,\n\
+         \n        )\n\
+         \n        if result.stderr:\n\
+         \n            sys.stderr.write(result.stderr)\n\
+         \n        out = (result.stdout or \"\").strip()\n\
+         \n        if not out:\n\
+         \n            print('{{\"cancel\": false}}')\n\
+         \n            return\n\
+         \n        try:\n\
+         \n            parsed = json.loads(out)\n\
+         \n            if isinstance(parsed, dict) and \"cancel\" in parsed:\n\
+         \n                sys.stdout.write(out if out.endswith(\"\\n\") else out + \"\\n\")\n\
+         \n                return\n\
+         \n        except json.JSONDecodeError:\n\
+         \n            pass\n\
+         \n        print(json.dumps({{\"cancel\": False, \"contextModification\": out}}))\n\
+         \n    except Exception:\n\
+         \n        print('{{\"cancel\": false}}')\n\
+         \n\
+         if __name__ == \"__main__\":\n\
+         \n    main()\n",
+        marker = CLINE_HOOK_MARKER,
+        event_file = event_file,
+        hook_event = python_string(hook_event),
+        exe = python_string(&exe.to_string_lossy()),
+        server_url = python_string(server_url),
+        auth_token = match auth_token {
+            Some(token) => python_string(token),
+            None => "None".to_owned(),
+        },
+        data_dir = match data_dir {
+            Some(path) => python_string(&path),
+            None => "None".to_owned(),
+        },
+        project_strategy = match project_strategy {
+            Some(strategy) => python_string(strategy),
+            None => "None".to_owned(),
+        },
+    )
+}
+
+fn python_string(value: &str) -> String {
+    serde_json::to_string(value).expect("string serializes")
+}
+
 /// Merge ai-memory's entries into the `hooks` key of Muse's `settings.json`,
 /// keeping `schema_version`, every unknown key and every other hook in it,
 /// idempotently, with a backup next to the file on change. Muse fails every
@@ -9863,6 +10183,155 @@ command = "AI_MEMORY_HOOK_URL=http://h AI_MEMORY_PROJECT_STRATEGY=repo-root /x/a
                 .to_string()
                 .contains("opening private DSH hook config")
         );
+        assert_eq!(fs::read_to_string(target).unwrap(), "untouched");
+    }
+
+    #[test]
+    fn cline_hooks_dir_prefers_env_overrides() {
+        let home = PathBuf::from("/home/me");
+        assert_eq!(
+            cline_hooks_dir_in(None, None, Some(home.clone())).unwrap(),
+            PathBuf::from("/home/me/.cline/hooks")
+        );
+        assert_eq!(
+            cline_hooks_dir_in(
+                None,
+                Some(std::ffi::OsString::from("/custom/cline")),
+                Some(home.clone()),
+            )
+            .unwrap(),
+            PathBuf::from("/custom/cline/hooks")
+        );
+        assert_eq!(
+            cline_hooks_dir_in(
+                Some(std::ffi::OsString::from("/explicit/hooks")),
+                Some(std::ffi::OsString::from("/custom/cline")),
+                Some(home),
+            )
+            .unwrap(),
+            PathBuf::from("/explicit/hooks")
+        );
+    }
+
+    #[test]
+    fn apply_to_cline_writes_python_hooks_and_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let mut args = default_hook_args();
+        args.agent = AgentChoice::Cline;
+        apply_to_cline(
+            dir.path(),
+            "http://127.0.0.1:49374",
+            None,
+            data.path(),
+            &args,
+        )
+        .expect("first apply");
+        let mut first = Vec::new();
+        for (event, hook_event) in CLINE_HOOK_EVENTS {
+            let path = dir.path().join(format!("{event}.py"));
+            let body = fs::read_to_string(&path).unwrap();
+            assert!(body.contains(CLINE_HOOK_MARKER), "{event}");
+            assert!(body.contains("#!/usr/bin/env python3"), "{event}");
+            assert!(
+                body.contains(&format!("EVENT = \"{hook_event}\"")),
+                "{event}: {body}"
+            );
+            assert!(body.contains("--agent\", \"cline\""), "{event}");
+            first.push(body);
+        }
+        apply_to_cline(
+            dir.path(),
+            "http://127.0.0.1:49374",
+            None,
+            data.path(),
+            &args,
+        )
+        .expect("second apply");
+        for ((event, _), expected) in CLINE_HOOK_EVENTS.iter().zip(first) {
+            let path = dir.path().join(format!("{event}.py"));
+            assert_eq!(fs::read_to_string(path).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn apply_to_cline_skips_a_foreign_python_hook() {
+        let dir = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let foreign = dir.path().join("TaskStart.py");
+        fs::write(&foreign, "print('third party')\n").unwrap();
+        let mut args = default_hook_args();
+        args.agent = AgentChoice::Cline;
+        apply_to_cline(
+            dir.path(),
+            "http://127.0.0.1:49374",
+            None,
+            data.path(),
+            &args,
+        )
+        .expect("apply skips foreign");
+        assert_eq!(
+            fs::read_to_string(&foreign).unwrap(),
+            "print('third party')\n"
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("UserPromptSubmit.py"))
+                .unwrap()
+                .contains(CLINE_HOOK_MARKER)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_to_cline_keeps_an_embedded_bearer_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let mut args = default_hook_args();
+        args.agent = AgentChoice::Cline;
+        apply_to_cline(
+            dir.path(),
+            "http://127.0.0.1:49374",
+            Some("private-bearer"),
+            data.path(),
+            &args,
+        )
+        .expect("apply_to_cline succeeds");
+
+        let path = dir.path().join("UserPromptSubmit.py");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let content = fs::read_to_string(path).unwrap();
+        assert!(content.contains("private-bearer"));
+        assert!(content.contains(CLINE_HOOK_MARKER));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_to_cline_refuses_a_symlinked_hook_file() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let target = data.path().join("foreign.py");
+        fs::write(&target, "untouched").unwrap();
+        symlink(&target, dir.path().join("TaskStart.py")).unwrap();
+
+        let mut args = default_hook_args();
+        args.agent = AgentChoice::Cline;
+        let error = apply_to_cline(
+            dir.path(),
+            "http://127.0.0.1:49374",
+            Some("private-bearer"),
+            data.path(),
+            &args,
+        )
+        .expect_err("a final symlink must be refused");
+
+        assert!(error.to_string().contains("opening Cline hook"), "{error}");
         assert_eq!(fs::read_to_string(target).unwrap(), "untouched");
     }
 

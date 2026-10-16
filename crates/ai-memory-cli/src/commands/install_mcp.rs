@@ -158,6 +158,7 @@ pub(crate) fn run_with_opencode_dialect(
         McpClient::KiroCli => render_kiro_cli(&args)?,
         McpClient::CommandCode => render_command_code(&args)?,
         McpClient::IbmBob => render_ibm_bob(&args)?,
+        McpClient::Cline => render_cline(&args)?,
         McpClient::CopilotCli => render_copilot_cli(&args)?,
         McpClient::Droid => render_droid(&args)?,
         McpClient::Swival => render_swival(&args)?,
@@ -352,7 +353,8 @@ fn stdio_bridge_entry(args: &InstallMcpArgs) -> Option<serde_json::Value> {
         | McpClient::KimiCode
         | McpClient::KiroCli
         | McpClient::Openclaw
-        | McpClient::IbmBob => plain(),
+        | McpClient::IbmBob
+        | McpClient::Cline => plain(),
         McpClient::GeminiCli | McpClient::AntigravityCli => json!({
             "command": BRIDGE_COMMAND,
             "args": bridge,
@@ -612,6 +614,7 @@ pub(crate) fn mcp_config_path_with(
             .join("mcp.json"),
         McpClient::CommandCode => home()?.join(".commandcode").join("mcp.json"),
         McpClient::IbmBob => home()?.join(".bob").join("settings").join("mcp.json"),
+        McpClient::Cline => cline_mcp_settings_path_in(env("CLINE_MCP_SETTINGS_PATH"), &home()?)?,
         // Copilot CLI keeps its whole config dir at $COPILOT_HOME when set,
         // falling back to ~/.copilot; user-level MCP servers live in
         // mcp-config.json there (project `.mcp.json` / `.github/mcp.json`
@@ -823,6 +826,22 @@ fn kiro_home(env_override: Option<std::ffi::OsString>) -> Result<PathBuf> {
     Ok(home_dir()
         .context("could not locate $HOME for Kiro configuration")?
         .join(".kiro"))
+}
+
+/// Cline MCP settings file: `CLINE_MCP_SETTINGS_PATH` when set and not blank,
+/// otherwise `~/.cline/data/settings/cline_mcp_settings.json`.
+fn cline_mcp_settings_path_in(
+    env_override: Option<std::ffi::OsString>,
+    home: &Path,
+) -> Result<PathBuf> {
+    if let Some(path) = env_override.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(home
+        .join(".cline")
+        .join("data")
+        .join("settings")
+        .join("cline_mcp_settings.json"))
 }
 
 /// GitHub Copilot CLI's configuration directory: `$COPILOT_HOME` when set and
@@ -1055,6 +1074,7 @@ fn json_mcp_location(client: McpClient) -> Option<JsonMcpLocation> {
         | McpClient::KiroCli
         | McpClient::CommandCode
         | McpClient::IbmBob
+        | McpClient::Cline
         | McpClient::CopilotCli
         | McpClient::Droid
         | McpClient::Swival
@@ -1637,6 +1657,16 @@ fn build_mcp_entry(args: &InstallMcpArgs) -> Result<serde_json::Value> {
             if let Some(b) = &bearer {
                 entry.insert("headers".into(), json!({"Authorization": b}));
             }
+        }
+        McpClient::Cline => {
+            // A bare `"url"` entry defaults to Cline's legacy SSE transport
+            // and 405s against Streamable HTTP `/mcp` (#1335).
+            entry.insert("type".into(), json!("streamableHttp"));
+            entry.insert("url".into(), json!(server_url));
+            if let Some(b) = &bearer {
+                entry.insert("headers".into(), json!({"Authorization": b}));
+            }
+            entry.insert("disabled".into(), json!(false));
         }
         McpClient::Swival => {
             // Swival .swival/mcp.json entry: `type: "http"` + `url` +
@@ -2477,6 +2507,22 @@ fn render_command_code(args: &InstallMcpArgs) -> Result<String> {
     ))
 }
 
+fn render_cline(args: &InstallMcpArgs) -> Result<String> {
+    Ok(format!(
+        "# Cline CLI / IDE — merge into ~/.cline/data/settings/cline_mcp_settings.json\n\
+         # (or $CLINE_MCP_SETTINGS_PATH), or re-run with --apply to merge it in\n\
+         # place preserving other servers. In the VS Code extension: MCP Servers\n\
+         # icon > Configure > Configure MCP Servers.\n\
+         #\n\
+         # `type` must be `streamableHttp`. A bare `url` entry defaults to\n\
+         # legacy SSE and 405s against ai-memory's Streamable HTTP `/mcp`.\n\
+         # Pair with `ai-memory install-hooks --agent cline --apply` for\n\
+         # lifecycle capture. Restart the Cline hub after installing hooks.\n\
+         {snippet}\n",
+        snippet = render_json_mcp_fragment(args)?,
+    ))
+}
+
 fn render_ibm_bob(args: &InstallMcpArgs) -> Result<String> {
     Ok(format!(
         "# IBM Bob IDE — merge into ~/.bob/settings/mcp.json, or re-run with\n\
@@ -2752,6 +2798,70 @@ mod tests {
         );
         assert_eq!(
             existing_entry_endpoint(McpClient::IbmBob, &file, "ai-memory").unwrap(),
+            Some("https://memory.example/mcp".into())
+        );
+    }
+
+    #[test]
+    fn cline_entry_uses_documented_streamable_http_shape() {
+        assert_eq!(
+            build_json_mcp_entry(&args_with_token(McpClient::Cline)).unwrap(),
+            json!({
+                "type": "streamableHttp",
+                "url": "http://127.0.0.1:49374/mcp",
+                "headers": {"Authorization": "Bearer test-token-deadbeef"},
+                "disabled": false,
+            })
+        );
+        assert_eq!(
+            build_json_mcp_entry(&args_for(McpClient::Cline)).unwrap(),
+            json!({
+                "type": "streamableHttp",
+                "url": "http://127.0.0.1:49374/mcp",
+                "disabled": false,
+            })
+        );
+        let path = mcp_config_path_with(McpClient::Cline, &|_| None).unwrap();
+        assert!(
+            path.ends_with(Path::new(".cline/data/settings/cline_mcp_settings.json")),
+            "{}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn cline_apply_preserves_siblings_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("cline_mcp_settings.json");
+        fs::write(
+            &file,
+            json!({
+                "mcpServers": {"other": {"type": "stdio", "command": "other"}},
+                "keep": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut args = args_for(McpClient::Cline);
+        args.config_file = Some(file.clone());
+        args.server_url = Some("https://memory.example/mcp".into());
+        apply_to_config_file(&args).unwrap();
+        let first = fs::read_to_string(&file).unwrap();
+        apply_to_config_file(&args).unwrap();
+        assert_eq!(first, fs::read_to_string(&file).unwrap());
+        let root: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(root["keep"], true);
+        assert_eq!(root["mcpServers"]["other"]["command"], "other");
+        assert_eq!(
+            root["mcpServers"]["ai-memory"],
+            json!({
+                "type": "streamableHttp",
+                "url": "https://memory.example/mcp",
+                "disabled": false,
+            })
+        );
+        assert_eq!(
+            existing_entry_endpoint(McpClient::Cline, &file, "ai-memory").unwrap(),
             Some("https://memory.example/mcp".into())
         );
     }
@@ -3909,6 +4019,7 @@ mod tests {
             McpClient::KiroCli => render_kiro_cli(&args).unwrap(),
             McpClient::CommandCode => render_command_code(&args).unwrap(),
             McpClient::IbmBob => render_ibm_bob(&args).unwrap(),
+            McpClient::Cline => render_cline(&args).unwrap(),
             McpClient::CopilotCli => render_copilot_cli(&args).unwrap(),
             McpClient::Droid => render_droid(&args).unwrap(),
             McpClient::Swival => render_swival(&args).unwrap(),
@@ -3943,6 +4054,7 @@ mod tests {
             McpClient::KiroCli,
             McpClient::CommandCode,
             McpClient::IbmBob,
+            McpClient::Cline,
             McpClient::CopilotCli,
             McpClient::Swival,
             McpClient::VsCodeCopilot,
@@ -3986,6 +4098,7 @@ mod tests {
             McpClient::Devin,
             McpClient::KimiCode,
             McpClient::IbmBob,
+            McpClient::Cline,
             McpClient::KiroCli,
             McpClient::CommandCode,
             McpClient::CopilotCli,
@@ -4029,6 +4142,7 @@ mod tests {
             McpClient::KiroCli => render_kiro_cli(&args).unwrap(),
             McpClient::CommandCode => render_command_code(&args).unwrap(),
             McpClient::IbmBob => render_ibm_bob(&args).unwrap(),
+            McpClient::Cline => render_cline(&args).unwrap(),
             McpClient::CopilotCli => render_copilot_cli(&args).unwrap(),
             McpClient::Droid => render_droid(&args).unwrap(),
             McpClient::Swival => render_swival(&args).unwrap(),

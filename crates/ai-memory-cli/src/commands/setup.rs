@@ -229,6 +229,9 @@ pub async fn run(config: &Config, args: SetupArgs, config_path: Option<&Path>) -
         if let Some(dir) = ibm_bob_detected(&home) {
             found.push((AgentChoice::IbmBob, Found::ConfigDir(dir)));
         }
+        if let Some(dir) = cline_detected(&home) {
+            found.push((AgentChoice::Cline, Found::ConfigDir(dir)));
+        }
         found
             .into_iter()
             .map(|(agent, found)| (agent, Some(found)))
@@ -412,6 +415,11 @@ fn codebuddy_detected(home: &Path) -> Option<PathBuf> {
 /// IBM Bob's shared configuration directory, `~/.bob`, when it exists.
 fn ibm_bob_detected(home: &Path) -> Option<PathBuf> {
     Some(home.join(".bob")).filter(|dir| dir.is_dir())
+}
+
+/// Cline CLI / IDE's directory, `~/.cline`, when it exists.
+fn cline_detected(home: &Path) -> Option<PathBuf> {
+    Some(home.join(".cline")).filter(|dir| dir.is_dir())
 }
 
 /// The binary path the service unit runs. A package manager's versioned
@@ -1147,6 +1155,22 @@ mod tests {
         assert_eq!(
             AgentPlan::new(AgentChoice::IbmBob, None).mcp,
             Some(McpClient::IbmBob)
+        );
+    }
+
+    #[test]
+    fn cline_is_detected_and_wires_hooks_mcp_and_shared_skills() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(cline_detected(home.path()), None);
+        std::fs::create_dir_all(home.path().join(".cline/hooks")).unwrap();
+        assert_eq!(
+            cline_detected(home.path()),
+            Some(home.path().join(".cline"))
+        );
+        assert_eq!(skills_for(AgentChoice::Cline), InstallSkillsAgent::Agents);
+        assert_eq!(
+            AgentPlan::new(AgentChoice::Cline, None).mcp,
+            Some(McpClient::Cline)
         );
     }
 

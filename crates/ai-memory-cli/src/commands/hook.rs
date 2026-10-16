@@ -570,7 +570,13 @@ fn write_success_response<W: std::io::Write>(
     agent: AgentKind,
     event: HookEvent,
 ) -> std::io::Result<()> {
-    if agent == AgentKind::KiroCli {
+    if agent == AgentKind::Cline {
+        // Cline file hooks require a JSON envelope. `cancel: false` is the
+        // capture-only success reply; a pending handoff is written later
+        // with `contextModification` on UserPromptSubmit. This branch is
+        // first so Cline never falls through to the Kimi silent path.
+        write_cline_hook_stdout(stdout, None)
+    } else if agent == AgentKind::KiroCli {
         // Kiro adds successful SessionStart/UserPromptSubmit stdout to model
         // context, and v2/v3 Stop parse stdout for a block decision. Capture-only
         // hooks therefore stay silent unless SessionStart has real context.
@@ -595,6 +601,22 @@ fn write_success_response<W: std::io::Write>(
     } else {
         writeln!(stdout, "{{}}")
     }
+}
+
+/// Cline's documented file-hook stdout: `{cancel, contextModification?}`.
+fn write_cline_hook_stdout<W: std::io::Write>(
+    stdout: &mut W,
+    context_modification: Option<&str>,
+) -> std::io::Result<()> {
+    let mut value = serde_json::Map::new();
+    value.insert("cancel".into(), serde_json::Value::Bool(false));
+    if let Some(text) = context_modification {
+        value.insert(
+            "contextModification".into(),
+            serde_json::Value::String(text.to_owned()),
+        );
+    }
+    writeln!(stdout, "{}", serde_json::Value::Object(value))
 }
 
 const GROK_ADDITIONAL_CONTEXT_CHARS: usize = 10_000;
@@ -1285,8 +1307,8 @@ where
     }
 
     // user-prompt: agents whose SessionStart stdout is discarded AND whose
-    // UserPromptSubmit stdout is injected (Kimi Code) receive the handoff
-    // here. Grok discards both, so it must not take this path: the GET
+    // UserPromptSubmit stdout is injected (Kimi Code, Cline) receive the
+    // handoff here. Grok discards both, so it must not take this path: the GET
     // accepts the handoff. The payload carries the native session id when
     // available, so the destructive GET can also link the managed run to the
     // native session, same as session-start does.
@@ -1365,12 +1387,19 @@ where
         }
         mark_briefed(&profile_path);
         if let Some(handoff) = handoff {
-            writeln!(stdout, "{handoff}")?;
+            if agent_kind == AgentKind::Cline {
+                write_cline_hook_stdout(stdout, Some(&handoff))?;
+            } else {
+                writeln!(stdout, "{handoff}")?;
+            }
+        } else if agent_kind == AgentKind::Cline {
+            write_cline_hook_stdout(stdout, None)?;
         }
         // Never print the usual `{}` here: kimi injects any non-empty stdout
         // into the turn verbatim, so an envelope would become user-visible
         // text. Empty handoff or any fetch error means print nothing at all
-        // (kimi ignores empty stdout; warnings go to stderr).
+        // (kimi ignores empty stdout; warnings go to stderr). Cline still
+        // needs the JSON envelope above so a missing body is not a hook error.
         return Ok(());
     }
 
@@ -2386,11 +2415,36 @@ mod tests {
                 HookEvent::PostToolUse,
                 b"{}\n".as_slice(),
             ),
+            (
+                AgentKind::Cline,
+                HookEvent::SessionStart,
+                b"{\"cancel\":false}\n".as_slice(),
+            ),
+            (
+                AgentKind::Cline,
+                HookEvent::UserPrompt,
+                b"{\"cancel\":false}\n".as_slice(),
+            ),
+            (
+                AgentKind::Cline,
+                HookEvent::PostToolUse,
+                b"{\"cancel\":false}\n".as_slice(),
+            ),
+            (AgentKind::KimiCode, HookEvent::UserPrompt, b"".as_slice()),
         ] {
             let mut output = Vec::new();
             write_success_response(&mut output, agent, event).unwrap();
             assert_eq!(output, expected, "{agent:?} {event:?}");
         }
+    }
+
+    #[test]
+    fn cline_hook_stdout_escapes_context_modification() {
+        let mut output = Vec::new();
+        write_cline_hook_stdout(&mut output, Some("say \"hello\"\nnext")).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["cancel"], false);
+        assert_eq!(value["contextModification"], "say \"hello\"\nnext");
     }
 
     fn drain_report(outcome: &hook_spool::LockedDrainResult) -> String {

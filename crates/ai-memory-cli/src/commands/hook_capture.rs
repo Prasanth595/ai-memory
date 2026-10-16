@@ -194,11 +194,12 @@ pub fn canonical_context(payload: &serde_json::Value) -> (Option<String>, Option
         })
     };
     let cwd = direct(&["cwd", "current_dir", "working_dir", "directory"])
-        .or_else(|| first_array_path(&["workspacePaths", "workspace_roots"]))
+        .or_else(|| first_array_path(&["workspacePaths", "workspace_roots", "workspaceRoots"]))
         .or_else(|| {
             [
                 ["path", "cwd"].as_slice(),
                 ["info", "directory"].as_slice(),
+                ["workspaceInfo", "rootPath"].as_slice(),
                 ["properties", "info", "directory"].as_slice(),
                 ["event", "properties", "info", "directory"].as_slice(),
                 ["payload", "path", "cwd"].as_slice(),
@@ -214,6 +215,7 @@ pub fn canonical_context(payload: &serde_json::Value) -> (Option<String>, Option
         "sessionID",
         "session",
         "conversationId",
+        "taskId",
     ])
     .or_else(|| {
         [
@@ -1439,6 +1441,30 @@ mod tests {
         assert_eq!(
             canonical_context(&tool_event).0,
             Some("/checkouts/repo-a".into())
+        );
+    }
+
+    #[test]
+    fn canonical_context_reads_cline_task_and_workspace_roots() {
+        let task_start = serde_json::json!({
+            "taskId": "task-abc",
+            "workspaceRoots": ["/checkouts/cline-repo"],
+        });
+        assert_eq!(
+            canonical_context(&task_start),
+            (
+                Some("/checkouts/cline-repo".into()),
+                Some("task-abc".into())
+            )
+        );
+
+        let nested = serde_json::json!({
+            "taskId": "task-nested",
+            "workspaceInfo": {"rootPath": "/from-info"},
+        });
+        assert_eq!(
+            canonical_context(&nested),
+            (Some("/from-info".into()), Some("task-nested".into()))
         );
     }
 

@@ -2490,6 +2490,13 @@ pub enum AgentChoice {
     /// `memory_handoff_accept` tool.
     #[value(alias = "deepseek-harness", alias = "deepseek_harness")]
     Dsh,
+    /// Cline CLI / IDE — file hooks in `~/.cline/hooks/` (`TaskStart.py`,
+    /// `PreToolUse.py`, …). Pair with `install-mcp --client cline`. Cline's
+    /// `agent_start` is fire-and-forget, so the pending handoff is delivered
+    /// on `UserPromptSubmit` as `contextModification`. `yolo: true` disables
+    /// every hook; the hub daemon snapshots hook files at startup, so restart
+    /// it after install (#1335).
+    Cline,
 }
 
 impl AgentChoice {
@@ -2526,6 +2533,7 @@ impl AgentChoice {
             Self::CodeBuddy => AgentKind::CodeBuddy,
             Self::IbmBob => AgentKind::IbmBob,
             Self::Dsh => AgentKind::Dsh,
+            Self::Cline => AgentKind::Cline,
         }
     }
 
@@ -2548,7 +2556,8 @@ impl AgentChoice {
             | Self::Droid
             | Self::Muse
             | Self::CodeBuddy
-            | Self::IbmBob => None,
+            | Self::IbmBob
+            | Self::Cline => None,
             _ => Some(self.kind().as_str()),
         }
     }
@@ -2809,6 +2818,12 @@ pub enum McpClient {
     /// claimed.
     #[value(alias = "deepseek-harness", alias = "deepseek_harness")]
     Dsh,
+    /// Cline CLI / IDE — `~/.cline/data/settings/cline_mcp_settings.json`
+    /// (override with `CLINE_MCP_SETTINGS_PATH`). The HTTP entry sets
+    /// `"type": "streamableHttp"` because a bare `"url"` defaults to legacy
+    /// SSE and 405s against ai-memory's Streamable HTTP `/mcp` (#1335).
+    /// Pair with `install-hooks --agent cline` for lifecycle capture.
+    Cline,
     /// Prime Agent (PrimeIntellect-ai/prime-agent) - the `mcpServers` map of
     /// `$PRIME_AGENT_CODING_AGENT_DIR/settings.json` (default
     /// `~/.prime/agent/settings.json`) with `type: "http"` + `url`. A token is
@@ -4820,6 +4835,25 @@ mod tests {
             };
             assert_eq!(args.client, McpClient::Dsh);
         }
+    }
+
+    #[test]
+    fn cline_install_hooks_and_mcp_parse() {
+        let hooks = Cli::try_parse_from(["ai-memory", "install-hooks", "--agent", "cline"])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let Command::InstallHooks(args) = hooks.command else {
+            panic!("expected install-hooks");
+        };
+        assert_eq!(args.agent, AgentChoice::Cline);
+        assert_eq!(args.agent.kind(), ai_memory_core::AgentKind::Cline);
+        assert_eq!(args.agent.script_hook_subdir(), None);
+
+        let mcp = Cli::try_parse_from(["ai-memory", "install-mcp", "--client", "cline"])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let Command::InstallMcp(args) = mcp.command else {
+            panic!("expected install-mcp");
+        };
+        assert_eq!(args.client, McpClient::Cline);
     }
 
     #[test]

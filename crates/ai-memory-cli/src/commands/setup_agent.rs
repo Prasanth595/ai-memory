@@ -135,6 +135,12 @@ pub fn run(config: &Config, mut args: SetupAgentArgs) -> Result<()> {
         emit_ibm_bob(&args)?;
         return Ok(());
     }
+    // Cline file hooks are generated Python wrappers, not a staged script
+    // bundle. setup-agent prints the same files `--apply` would write.
+    if matches!(args.agent, AgentChoice::Cline) {
+        emit_cline(&args)?;
+        return Ok(());
+    }
     let Some(agent_sub) = args.agent.script_hook_subdir() else {
         bail!("internal: generated integration should have returned before staging hooks")
     };
@@ -235,7 +241,8 @@ pub fn run(config: &Config, mut args: SetupAgentArgs) -> Result<()> {
         | AgentChoice::Droid
         | AgentChoice::Muse
         | AgentChoice::CodeBuddy
-        | AgentChoice::IbmBob => {
+        | AgentChoice::IbmBob
+        | AgentChoice::Cline => {
             bail!(
                 "internal: generated integration should have returned before emitting staged hooks"
             )
@@ -429,6 +436,23 @@ fn emit_ibm_bob(args: &SetupAgentArgs) -> Result<()> {
     }
     println!();
     println!("{serialized}");
+    Ok(())
+}
+
+/// Print Cline's generated Python hook files. No script bundle is staged:
+/// each file forwards stdin to the native `hook` command.
+fn emit_cline(args: &SetupAgentArgs) -> Result<()> {
+    let dir = crate::commands::install_hooks::cline_hooks_dir()?;
+    print!(
+        "{}",
+        crate::commands::install_hooks::render_cline_output(
+            &dir,
+            &args.server_url,
+            args.auth_token.as_deref(),
+            None,
+            None,
+        )
+    );
     Ok(())
 }
 
