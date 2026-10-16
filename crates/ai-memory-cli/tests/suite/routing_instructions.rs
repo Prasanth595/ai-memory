@@ -516,4 +516,45 @@ fn install_instructions_warns_when_claude_code_will_skip_agents_md() {
     assert!(!run(&[("CLAUDE.local.md", "@AGENTS.md\n")]).contains(note));
     // A CLAUDE.md alongside becomes a target too, so Claude Code sees the block.
     assert!(!run(&[("CLAUDE.md", "# claude\n")]).contains(note));
+
+    // #1345: project under $HOME with user memory. The binary reads HOME from
+    // the environment; a unit test that passes a path into
+    // claude_code_skips_agents_md cannot see a wiring miss.
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("proj");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("AGENTS.md"), "# Project\n").unwrap();
+    fs::create_dir_all(home.path().join(".claude")).unwrap();
+    fs::write(home.path().join(".claude/CLAUDE.md"), "# user memory\n").unwrap();
+    let output = run_ai_memory(
+        &project,
+        home.path(),
+        &["install-instructions", "--no-skills"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains(note),
+        "user memory under HOME must not print the skip note: {stderr}"
+    );
+
+    #[cfg(unix)]
+    {
+        let root = tempfile::tempdir().unwrap();
+        let physical = root.path().join("home");
+        let linked = root.path().join("homelink");
+        fs::create_dir_all(physical.join(".claude")).unwrap();
+        let project = physical.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(physical.join(".claude/CLAUDE.md"), "# user memory\n").unwrap();
+        fs::write(project.join("AGENTS.md"), "# Project\n").unwrap();
+        std::os::unix::fs::symlink(&physical, &linked).unwrap();
+        let output = run_ai_memory(&project, &linked, &["install-instructions", "--no-skills"]);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_success(output);
+        assert!(
+            !stderr.contains(note),
+            "HOME through a symlink must still skip user memory: {stderr}"
+        );
+    }
 }

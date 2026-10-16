@@ -194,7 +194,10 @@ fn claude_code_skips_agents_md(
     let mut found = Vec::new();
     for dir in cwd.ancestors() {
         for name in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"] {
-            if name == ".claude/CLAUDE.md" && home == Some(dir) {
+            // Skip Claude Code's user-memory file. Compare canonical paths:
+            // cwd comes from current_dir() (physical) while $HOME may be a
+            // symlink (#1345).
+            if name == ".claude/CLAUDE.md" && home.is_some_and(|h| paths_match(h, dir)) {
                 continue;
             }
             let candidate = dir.join(name);
@@ -943,6 +946,44 @@ mod tests {
             note.is_some(),
             "a home import of a different file still leaves AGENTS.md unloaded"
         );
+    }
+
+    /// #1345: `~/.claude/CLAUDE.md` is user memory. `current_dir()` is the
+    /// physical path, so HOME given as a symlink must still match.
+    #[test]
+    fn claude_code_skips_user_memory_claude_md_under_home() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let agents = project.join("AGENTS.md");
+        std::fs::write(&agents, "# agents\n").unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/CLAUDE.md"), "# user\n").unwrap();
+
+        let note =
+            claude_code_skips_agents_md(std::slice::from_ref(&agents), &project, Some(home.path()));
+        assert!(
+            note.is_none(),
+            "user memory under home is not a project blocker: {}",
+            note.unwrap_or_default()
+        );
+
+        #[cfg(unix)]
+        {
+            let link_root = tempfile::tempdir().unwrap();
+            let linked = link_root.path().join("homelink");
+            std::os::unix::fs::symlink(home.path(), &linked).unwrap();
+            let note = claude_code_skips_agents_md(
+                std::slice::from_ref(&agents),
+                &project,
+                Some(linked.as_path()),
+            );
+            assert!(
+                note.is_none(),
+                "user memory under a symlinked HOME is not a project blocker: {}",
+                note.unwrap_or_default()
+            );
+        }
     }
 
     #[test]

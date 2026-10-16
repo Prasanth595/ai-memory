@@ -11,6 +11,12 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+- Fixed `install-instructions` treating Claude Code's user memory
+  (`~/.claude/CLAUDE.md`) as a project file when `$HOME` is a symlink.
+  The skip now uses the same canonical path comparison as import
+  resolution, so a home reached through a link is still ignored. (#1345)
+
 ## [3.1.0] - 2026-10-16
 
 ### Added
