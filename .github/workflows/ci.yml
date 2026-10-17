@@ -5,11 +5,11 @@ on:
       candidate:
         type: choice
         required: true
-        options: [markdown, atomic-download]
+        options: [markdown, atomic-download, percent-destination]
       base:
         type: string
         required: true
-        default: "584ab792a2ac506445ca27629f040311ad8dc0d2"
+        default: "9ade81b67e33210507af0ed86036f3c7ea1c8288"
       patch_base64:
         type: string
         required: true
@@ -41,12 +41,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: akitaonrails/ai-memory
-          ref: 584ab792a2ac506445ca27629f040311ad8dc0d2
+          ref: 9ade81b67e33210507af0ed86036f3c7ea1c8288
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.95"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          shared-key: ai-native-1.95
       - name: Verify frozen base, reviewed paths and patch digest; apply working tree only
         env:
           CANDIDATE: ${{ inputs.candidate }}
@@ -59,7 +62,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64,hashlib,json,os,pathlib,subprocess
-          EXPECTED = {'markdown': {'base': '584ab792a2ac506445ca27629f040311ad8dc0d2', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '6174a96dd17de890ff8f7ff626a1aa04021b111c780f7e8db190a9606eb3b092', 'tests_sha256': '77376114388d1dccf1886b3c4ed12cc1516f756bc4b0436b474a73e54646b92d', 'candidate_bytes': 8677, 'tests_bytes': 4973}, 'atomic-download': {'base': '584ab792a2ac506445ca27629f040311ad8dc0d2', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': '601a05fb84d4e41385cff5f3338c04c9cd9557790d7eea49cd4c828538cea997', 'tests_sha256': '651beacf1ac7e64a6305c6ebd686e90635f1a71fe3ee70aaeab8262e0531accf', 'candidate_bytes': 19287, 'tests_bytes': 11317}}
+          EXPECTED = {'markdown': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '9bf510df6b2aeff1b5cc3b4114df9243ee68e371f3b2ee0bafa1d59da613c6ca', 'tests_sha256': '8bb33024c9e370dc6ede5670bb96ee21073ebb1632ad15744e4db9b0c1487942', 'candidate_bytes': 8820, 'tests_bytes': 4973}, 'atomic-download': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': 'd22c47db9da4bd3c931b817dee4d38d9357a7524f8738c2ce2aaf725f6a858c7', 'tests_sha256': '651beacf1ac7e64a6305c6ebd686e90635f1a71fe3ee70aaeab8262e0531accf', 'candidate_bytes': 19430, 'tests_bytes': 11317}, 'percent-destination': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '99761ca8438c6c6144c0a9ba0f28c0731e272e1a6bd33e0117df277958c35a02', 'tests_sha256': '4edfb484bcd8adb6cb0e9f8acf8dd4dee884c53827e5535ca62f3d2849afe324', 'candidate_bytes': 28267, 'tests_bytes': 8759}}
           name=os.environ['CANDIDATE']; mode=os.environ['MODE']; expected=EXPECTED[name]
           assert os.environ['BASE']==expected['base'], 'base input mismatch'
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
@@ -107,7 +110,11 @@ jobs:
            ['cargo','test','--locked','-p','ai-memory-mcp','export_okf_labels_preserve_links_when_the_bundle_is_reindexed','--','--nocapture']],
           'atomic-download':[
            ['cargo','test','--locked','-p','ai-memory-cli','--test','suite','backup_download::interrupted_archive_download_preserves_previous_output','--','--exact','--nocapture'],
-           ['cargo','test','--locked','-p','ai-memory-cli','--test','suite','backup_download::interrupted_archive_download_leaves_no_partial_output','--','--exact','--nocapture']]}
+           ['cargo','test','--locked','-p','ai-memory-cli','--test','suite','backup_download::interrupted_archive_download_leaves_no_partial_output','--','--exact','--nocapture']],
+          'percent-destination':[
+           ['cargo','test','--locked','-p','ai-memory-wiki','markdown_url_paths_decode_once_before_link_resolution','--','--nocapture'],
+           ['cargo','test','--locked','-p','ai-memory-web','markdown_url_destinations_are_decoded_once_before_route_encoding','--','--nocapture'],
+           ['cargo','test','--locked','-p','ai-memory-web','--test','suite','encoded_markdown_links_resolve_and_remain_in_the_source_scope','--','--nocapture']]}
           results=[]
           for i,cmd in enumerate(checks[name]):
            result=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=2100,env=child_env)
@@ -137,12 +144,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: akitaonrails/ai-memory
-          ref: 584ab792a2ac506445ca27629f040311ad8dc0d2
+          ref: 9ade81b67e33210507af0ed86036f3c7ea1c8288
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.95"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          shared-key: ai-native-1.95
       - name: Verify frozen base, reviewed paths and patch digest; apply working tree only
         env:
           CANDIDATE: ${{ inputs.candidate }}
@@ -155,7 +165,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64,hashlib,json,os,pathlib,subprocess
-          EXPECTED = {'markdown': {'base': '584ab792a2ac506445ca27629f040311ad8dc0d2', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '6174a96dd17de890ff8f7ff626a1aa04021b111c780f7e8db190a9606eb3b092', 'tests_sha256': '77376114388d1dccf1886b3c4ed12cc1516f756bc4b0436b474a73e54646b92d', 'candidate_bytes': 8677, 'tests_bytes': 4973}, 'atomic-download': {'base': '584ab792a2ac506445ca27629f040311ad8dc0d2', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': '601a05fb84d4e41385cff5f3338c04c9cd9557790d7eea49cd4c828538cea997', 'tests_sha256': '651beacf1ac7e64a6305c6ebd686e90635f1a71fe3ee70aaeab8262e0531accf', 'candidate_bytes': 19287, 'tests_bytes': 11317}}
+          EXPECTED = {'markdown': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '9bf510df6b2aeff1b5cc3b4114df9243ee68e371f3b2ee0bafa1d59da613c6ca', 'tests_sha256': '8bb33024c9e370dc6ede5670bb96ee21073ebb1632ad15744e4db9b0c1487942', 'candidate_bytes': 8820, 'tests_bytes': 4973}, 'atomic-download': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': 'd22c47db9da4bd3c931b817dee4d38d9357a7524f8738c2ce2aaf725f6a858c7', 'tests_sha256': '651beacf1ac7e64a6305c6ebd686e90635f1a71fe3ee70aaeab8262e0531accf', 'candidate_bytes': 19430, 'tests_bytes': 11317}, 'percent-destination': {'base': '9ade81b67e33210507af0ed86036f3c7ea1c8288', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '99761ca8438c6c6144c0a9ba0f28c0731e272e1a6bd33e0117df277958c35a02', 'tests_sha256': '4edfb484bcd8adb6cb0e9f8acf8dd4dee884c53827e5535ca62f3d2849afe324', 'candidate_bytes': 28267, 'tests_bytes': 8759}}
           name=os.environ['CANDIDATE']; mode=os.environ['MODE']; expected=EXPECTED[name]
           assert os.environ['BASE']==expected['base'], 'base input mismatch'
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
@@ -237,6 +247,34 @@ jobs:
           log-level: warn
           command: check
           arguments: --all-features
+      - name: Require native guard-removal failures and restore candidate
+        if: inputs.candidate == 'percent-destination'
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'ai-memory-qualification'
+          wiki=pathlib.Path('crates/ai-memory-wiki/src/markdown.rs');web=pathlib.Path('crates/ai-memory-web/src/markdown.rs')
+          wiki_test=['cargo','test','--locked','-p','ai-memory-wiki','decoded_markdown_paths_cannot_escape_or_change_scope','--','--nocapture']
+          web_test=['cargo','test','--locked','-p','ai-memory-web','decoded_markdown_destinations_cannot_change_the_web_scope','--','--nocapture']
+          ws=wiki.read_text();ss=web.read_text();start=ss.index('    if decoded_path.is_empty()');end=ss.index('    let mut path_part =',start)
+          cases=[
+           ('encoded-controls',wiki,'if byte.is_ascii_control() {','if false {',wiki_test),
+           ('invalid-utf8',wiki,'String::from_utf8(decoded).ok().map(std::borrow::Cow::Owned)','Some(std::borrow::Cow::Owned(String::from_utf8_lossy(&decoded).into_owned()))',wiki_test),
+           ('root-traversal',wiki,'parts.pop()?;','parts.pop();',wiki_test),
+           ('decoded-web-guard',web,ss[start:end],'',web_test),
+          ]
+          results=[]
+          child_env={key:value for key,value in os.environ.items()if key not in {'GITHUB_TOKEN','GH_TOKEN'}and not key.startswith(('OPENAI_','ANTHROPIC_','AWS_','AZURE_','GOOGLE_','GEMINI_','AI_MEMORY_'))}
+          for name,file,old,new,cmd in cases:
+           original=file.read_bytes();text=original.decode();assert text.count(old)==1,(name,'mutation is not unique')
+           try:
+            file.write_text(text.replace(old,new,1));r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=300,env=child_env);(root/('bite-'+name+'.log')).write_text(r.stdout);print(r.stdout)
+            assert r.returncode==101 and 'test result: FAILED'in r.stdout and 'panicked at'in r.stdout,'guard removal must fail a native assertion'
+            assert 'could not compile'not in r.stdout and 'error[E'not in r.stdout,'compile failure is not guard evidence'
+            results.append({'guard':name,'exit':r.returncode,'assertion_failure':True,'source':str(file)})
+           finally:file.write_bytes(original)
+          (root/'guard-bites.json').write_text(json.dumps(results,indent=2)+'\n')
+          PY
       - name: Verify whitespace and final patch identity including new files
         env:
           CANDIDATE: ${{ inputs.candidate }}
