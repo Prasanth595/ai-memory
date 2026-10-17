@@ -478,6 +478,21 @@ fn devin_install_instructions_writes_project_devin_skills() {
     assert!(!project.path().join(".agents/skills").exists());
 }
 
+/// Whether any ancestor strictly above the OS temp directory holds one of the
+/// memory files the binary scans for. The binary walks `cwd` up to the
+/// filesystem root looking for `CLAUDE.md` / `CLAUDE.local.md` /
+/// `.claude/CLAUDE.md`, so a developer's real user profile above the temp dir
+/// (e.g. `%USERPROFILE%\CLAUDE.md` on Windows) can leak into the "no note"
+/// controls and fail them spuriously (see #1346).
+fn temp_dir_ancestor_has_memory_file() -> bool {
+    const MEMORY_FILES: [&str; 3] = ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"];
+    std::env::temp_dir().ancestors().any(|ancestor| {
+        MEMORY_FILES
+            .iter()
+            .any(|name| ancestor.join(name).is_file())
+    })
+}
+
 /// #1297: with only `AGENTS.md` written, a `CLAUDE.local.md` or
 /// `.claude/CLAUDE.md` makes Claude Code read that instead, so the install
 /// says so. Controls: `AGENTS.md` alone, a `CLAUDE.md` target alongside, and a
@@ -511,6 +526,14 @@ fn install_instructions_warns_when_claude_code_will_skip_agents_md() {
             stderr.contains(note) && stderr.contains(shadow),
             "{shadow}: {stderr}"
         );
+    }
+    // The negative controls hold only when nothing above the temp project
+    // shadows `AGENTS.md`. A developer's real home (`~/.claude/CLAUDE.md`) can
+    // do that on this machine, so skip them when the ancestors are dirty — the
+    // positive cases above are unaffected either way.
+    if temp_dir_ancestor_has_memory_file() {
+        eprintln!("skipping no-note controls: an ancestor of the temp dir holds a memory file");
+        return;
     }
     assert!(!run(&[]).contains(note));
     assert!(!run(&[("CLAUDE.local.md", "@AGENTS.md\n")]).contains(note));
