@@ -62,7 +62,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64,hashlib,json,os,pathlib,subprocess
-          EXPECTED = {'markdown': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '532499c7f04df69f458fc8931b99bd35a6e22873439c0b345294463551e71714', 'tests_sha256': 'f955747f2efe1672a03aff99a9c3b53b2ab3581e1d46cfc89e52b96c6dce08ff', 'candidate_bytes': 9036, 'tests_bytes': 4973}, 'atomic-download': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': 'd2090a61d6e893c118819d64e40a82ed6e1f9d9ec4d54acaf316f4bc870b9e32', 'tests_sha256': '756fbf69a8f122062e1f42d21510bbc05e99cf7fcb10664e9e40ab0f4718d5f4', 'candidate_bytes': 19648, 'tests_bytes': 11317}, 'percent-destination': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': 'a01699b282768ca820eca3e8623eb7cd7a3dd4eafe6984131b3295b9b3f9fa48', 'tests_sha256': '456e98a69c75512069a7bf477bb7d796bfd2475313e96b510dcce5d2a10047a4', 'candidate_bytes': 27225, 'tests_bytes': 8759}}
+          EXPECTED = {'markdown': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '9db73303882188edef8fecc8c1b94a96d706ac9eda7110ba90718c809199f75d', 'tests_sha256': 'f955747f2efe1672a03aff99a9c3b53b2ab3581e1d46cfc89e52b96c6dce08ff', 'candidate_bytes': 9292, 'tests_bytes': 4973}, 'atomic-download': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': '8c984e29c5c6c561708d720f48e92de66eaba9bd1edf0eb705df228902139560', 'tests_sha256': '756fbf69a8f122062e1f42d21510bbc05e99cf7fcb10664e9e40ab0f4718d5f4', 'candidate_bytes': 19968, 'tests_bytes': 11317}, 'percent-destination': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': 'ba6322de285c2ed68d78a77c765c2e3c8d6f5feaae17ca9a87a7b6e175dc97b8', 'tests_sha256': '456e98a69c75512069a7bf477bb7d796bfd2475313e96b510dcce5d2a10047a4', 'candidate_bytes': 27673, 'tests_bytes': 8759}}
           name=os.environ['CANDIDATE']; mode=os.environ['MODE']; expected=EXPECTED[name]
           assert os.environ['BASE']==expected['base'], 'base input mismatch'
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
@@ -182,7 +182,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64,hashlib,json,os,pathlib,subprocess
-          EXPECTED = {'markdown': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '532499c7f04df69f458fc8931b99bd35a6e22873439c0b345294463551e71714', 'tests_sha256': 'f955747f2efe1672a03aff99a9c3b53b2ab3581e1d46cfc89e52b96c6dce08ff', 'candidate_bytes': 9036, 'tests_bytes': 4973}, 'atomic-download': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': 'd2090a61d6e893c118819d64e40a82ed6e1f9d9ec4d54acaf316f4bc870b9e32', 'tests_sha256': '756fbf69a8f122062e1f42d21510bbc05e99cf7fcb10664e9e40ab0f4718d5f4', 'candidate_bytes': 19648, 'tests_bytes': 11317}, 'percent-destination': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': 'a01699b282768ca820eca3e8623eb7cd7a3dd4eafe6984131b3295b9b3f9fa48', 'tests_sha256': '456e98a69c75512069a7bf477bb7d796bfd2475313e96b510dcce5d2a10047a4', 'candidate_bytes': 27225, 'tests_bytes': 8759}}
+          EXPECTED = {'markdown': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md'], 'tests_paths': ['crates/ai-memory-mcp/src/admin.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': '9db73303882188edef8fecc8c1b94a96d706ac9eda7110ba90718c809199f75d', 'tests_sha256': 'f955747f2efe1672a03aff99a9c3b53b2ab3581e1d46cfc89e52b96c6dce08ff', 'candidate_bytes': 9292, 'tests_bytes': 4973}, 'atomic-download': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-cli/src/http_client.rs', 'crates/ai-memory-cli/tests/suite/main.rs', 'docs/okf.md', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'tests_paths': ['crates/ai-memory-cli/tests/suite/main.rs', 'crates/ai-memory-cli/tests/suite/backup_download.rs'], 'candidate_sha256': '8c984e29c5c6c561708d720f48e92de66eaba9bd1edf0eb705df228902139560', 'tests_sha256': '756fbf69a8f122062e1f42d21510bbc05e99cf7fcb10664e9e40ab0f4718d5f4', 'candidate_bytes': 19968, 'tests_bytes': 11317}, 'percent-destination': {'base': '3334785675d8e56349107f68aef48a3ecbf4ada9', 'paths': ['CHANGELOG.md', 'crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/lib.rs', 'crates/ai-memory-wiki/src/markdown.rs', 'docs/okf.md', 'docs/security-boundaries.md'], 'tests_paths': ['crates/ai-memory-web/src/markdown.rs', 'crates/ai-memory-web/tests/suite/routes.rs', 'crates/ai-memory-wiki/src/markdown.rs'], 'candidate_sha256': 'ba6322de285c2ed68d78a77c765c2e3c8d6f5feaae17ca9a87a7b6e175dc97b8', 'tests_sha256': '456e98a69c75512069a7bf477bb7d796bfd2475313e96b510dcce5d2a10047a4', 'candidate_bytes': 27673, 'tests_bytes': 8759}}
           name=os.environ['CANDIDATE']; mode=os.environ['MODE']; expected=EXPECTED[name]
           assert os.environ['BASE']==expected['base'], 'base input mismatch'
           head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
@@ -207,6 +207,38 @@ jobs:
           metadata={'candidate':name,'mode':mode,'base':head,'patch_sha256':expected[key],'paths':paths,'source_commit_pushed':False,'platform':'ubuntu-latest','rust':'1.95','workflow_commit':os.environ['GITHUB_SHA']}
           (root/'metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
           print(json.dumps(metadata))
+          PY
+      - name: Require exact full-index identity immediately after apply
+        env:
+          EXPECTED_SHA256: ${{ inputs.patch_sha256 }}
+          IDENTITY_PHASE: preflight
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,stat,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'ai-memory-qualification';root.mkdir(exist_ok=True)
+          phase=os.environ.get('IDENTITY_PHASE','final')
+          canonical=subprocess.check_output(['git','diff','--binary','--full-index'])
+          untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard'],text=True).splitlines()
+          for file in untracked:
+           result=subprocess.run(['git','diff','--no-index','--binary','--full-index','--','/dev/null',file],capture_output=True)
+           assert result.returncode==1, 'failed to inspect new file'
+           canonical+=result.stdout
+          (root/(phase+'.patch')).write_bytes(canonical)
+          status=subprocess.check_output(['git','status','--porcelain=v1','-uall'],text=True)
+          (root/(phase+'-status.txt')).write_text(status)
+          paths=subprocess.check_output(['git','diff','--name-only'],text=True).splitlines()+untracked
+          files={}
+          for name in sorted(set(paths)):
+           p=pathlib.Path(name)
+           if not p.exists() and not p.is_symlink(): files[name]={'deleted':True};continue
+           data=os.readlink(p).encode()if p.is_symlink()else p.read_bytes()
+           files[name]={'sha256':hashlib.sha256(data).hexdigest(),'mode':oct(stat.S_IMODE(p.lstat().st_mode)),'bytes':len(data),'symlink':p.is_symlink()}
+          (root/(phase+'-source-files.json')).write_text(json.dumps(files,indent=2)+chr(10))
+          actual=hashlib.sha256(canonical).hexdigest()
+          (root/(phase+'-patch-identity.json')).write_text(json.dumps({'sha256':actual,'expected':os.environ['EXPECTED_SHA256'],'serializer':'git diff --binary --full-index plus untracked no-index binary full-index','including_untracked_files':True},indent=2)+chr(10))
+          subprocess.run(['git','diff','--check'],check=True)
+          assert actual==os.environ['EXPECTED_SHA256'], 'qualification patch identity mismatch; actual patch/status/source hashes retained'
+          print(phase+' reviewed patch SHA-256:',actual)
           PY
       - name: Record native compiler and resource budget
         run: |
@@ -298,18 +330,31 @@ jobs:
           EXPECTED_SHA256: ${{ inputs.patch_sha256 }}
         run: |
           python3 - <<'PY'
-          import hashlib,json,os,pathlib,subprocess
-          subprocess.run(['git','diff','--check'],check=True)
-          canonical=subprocess.check_output(['git','diff','--binary'])
-          for file in subprocess.check_output(['git','ls-files','--others','--exclude-standard'],text=True).splitlines():
-              result=subprocess.run(['git','diff','--no-index','--binary','--','/dev/null',file],capture_output=True)
-              assert result.returncode==1, 'failed to inspect new file'
-              canonical+=result.stdout
+          import hashlib,json,os,pathlib,stat,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'ai-memory-qualification';root.mkdir(exist_ok=True)
+          phase=os.environ.get('IDENTITY_PHASE','final')
+          canonical=subprocess.check_output(['git','diff','--binary','--full-index'])
+          untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard'],text=True).splitlines()
+          for file in untracked:
+           result=subprocess.run(['git','diff','--no-index','--binary','--full-index','--','/dev/null',file],capture_output=True)
+           assert result.returncode==1, 'failed to inspect new file'
+           canonical+=result.stdout
+          (root/(phase+'.patch')).write_bytes(canonical)
+          status=subprocess.check_output(['git','status','--porcelain=v1','-uall'],text=True)
+          (root/(phase+'-status.txt')).write_text(status)
+          paths=subprocess.check_output(['git','diff','--name-only'],text=True).splitlines()+untracked
+          files={}
+          for name in sorted(set(paths)):
+           p=pathlib.Path(name)
+           if not p.exists() and not p.is_symlink(): files[name]={'deleted':True};continue
+           data=os.readlink(p).encode()if p.is_symlink()else p.read_bytes()
+           files[name]={'sha256':hashlib.sha256(data).hexdigest(),'mode':oct(stat.S_IMODE(p.lstat().st_mode)),'bytes':len(data),'symlink':p.is_symlink()}
+          (root/(phase+'-source-files.json')).write_text(json.dumps(files,indent=2)+chr(10))
           actual=hashlib.sha256(canonical).hexdigest()
-          assert actual==os.environ['EXPECTED_SHA256'], 'qualification mutated the reviewed patch'
-          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'ai-memory-qualification'
-          (root/'final-patch-identity.json').write_text(json.dumps({'sha256':actual,'including_untracked_files':True},indent=2)+chr(10))
-          print('Final reviewed patch SHA-256:',actual)
+          (root/(phase+'-patch-identity.json')).write_text(json.dumps({'sha256':actual,'expected':os.environ['EXPECTED_SHA256'],'serializer':'git diff --binary --full-index plus untracked no-index binary full-index','including_untracked_files':True},indent=2)+chr(10))
+          subprocess.run(['git','diff','--check'],check=True)
+          assert actual==os.environ['EXPECTED_SHA256'], 'qualification patch identity mismatch; actual patch/status/source hashes retained'
+          print(phase+' reviewed patch SHA-256:',actual)
           PY
       - name: Preserve native receipts
         if: always()
