@@ -115,15 +115,28 @@ jobs:
            ['cargo','test','--locked','-p','ai-memory-wiki','markdown_url_paths_decode_once_before_link_resolution','--','--nocapture'],
            ['cargo','test','--locked','-p','ai-memory-web','markdown_url_destinations_are_decoded_once_before_route_encoding','--','--nocapture'],
            ['cargo','test','--locked','-p','ai-memory-web','--test','suite','encoded_markdown_links_resolve_and_remain_in_the_source_scope','--','--nocapture']]}
+          ATOMIC_ASSERTIONS={
+           'backup_download::interrupted_archive_download_preserves_previous_output': 'assertion `left == right` failed',
+           'backup_download::interrupted_archive_download_leaves_no_partial_output': 'failed download must not publish a partial archive',
+          }
+          def validate_baseline_result(candidate,cmd,returncode,log):
+           assert returncode==101, 'baseline must fail with cargo test failure, not success or infrastructure exit'
+           assert 'test result: FAILED' in log and 'panicked at' in log, 'expected native assertion failure missing'
+           assert 'could not compile'not in log and 'error[E'not in log, 'compilation errors are not regression evidence'
+           target=cmd[cmd.index('--')-1]
+           assert target in log, 'requested regression was not reported'
+           if candidate=='atomic-download':
+            assert f"test {target} ... FAILED" in log, 'requested atomic regression did not fail'
+            assert f"thread '{target}'" in log, 'requested atomic regression did not panic'
+            assert ATOMIC_ASSERTIONS[target] in log, 'expected atomic assertion message missing'
+           else:
+            assert 'assertion' in log, 'expected native assertion failure missing'
+           return target
           results=[]
           for i,cmd in enumerate(checks[name]):
            result=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=2100,env=child_env)
            log=result.stdout;(root/f'baseline-{i}.log').write_text(log);print(log)
-           assert result.returncode==101, 'baseline must fail with cargo test failure, not success or infrastructure exit'
-           assert 'test result: FAILED' in log and 'panicked at' in log and 'assertion' in log, 'expected native assertion failure missing'
-           assert 'could not compile'not in log and 'error[E'not in log, 'compilation errors are not regression evidence'
-           target=cmd[cmd.index('--')-1]
-           assert target in log, 'requested regression was not reported'
+           target=validate_baseline_result(name,cmd,result.returncode,log)
            results.append({'command':cmd,'exit':result.returncode,'assertion_failure':True})
           (root/'baseline-results.json').write_text(json.dumps(results,indent=2)+'\n')
           PY
