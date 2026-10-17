@@ -129,6 +129,10 @@ jobs:
             assert f"test {target} ... FAILED" in log, 'requested atomic regression did not fail'
             assert f"thread '{target}'" in log, 'requested atomic regression did not panic'
             assert ATOMIC_ASSERTIONS[target] in log, 'expected atomic assertion message missing'
+           elif candidate=='percent-destination' and target=='markdown_url_destinations_are_decoded_once_before_route_encoding':
+            assert 'test markdown::tests::'+target+' ... FAILED' in log, 'requested web regression did not fail'
+            assert "thread 'markdown::tests::"+target+"'" in log, 'requested web regression did not panic'
+            assert '<p><a href="w/default/scratch/p/notes/my%2520note.md#part">' in log, 'expected double-encoded output missing'
            else:
             assert 'assertion' in log, 'expected native assertion failure missing'
            return target
