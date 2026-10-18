@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 - A2 compaction no longer loses the first paragraph of a page when a heading
   sits directly above it, and it summarises only the first paragraph of a CRLF
   body instead of the whole page. The L1 summary is read line by line, so a
-  heading line ends the paragraph above it and is never part of the summary.
+  heading line ends the paragraph above it and is never part of the summary. (#1414)
 
 ## [3.1.0] - 2026-10-16
 
