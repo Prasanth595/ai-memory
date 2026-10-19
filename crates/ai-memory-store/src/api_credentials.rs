@@ -145,7 +145,8 @@ pub fn touch_api_credential(conn: &Connection, id: ApiCredentialId) -> StoreResu
     Ok(rows > 0)
 }
 
-/// Hot-path auth lookup. Does **not** filter `users.disabled_at`.
+/// Hot-path auth lookup. Filters `users.disabled_at` so that disabled
+/// accounts cannot authenticate via API credentials.
 ///
 /// # Errors
 /// SQL failures.
@@ -160,7 +161,8 @@ pub fn find_active_user_by_token_hash(
          FROM api_credentials c \
          JOIN users u ON u.id = c.user_id \
          WHERE c.token_hash = ?1 AND c.revoked_at IS NULL \
-           AND (c.expires_at IS NULL OR c.expires_at > ?2)",
+           AND (c.expires_at IS NULL OR c.expires_at > ?2) \
+           AND u.disabled_at IS NULL",
         params![token_hash.as_slice(), now],
         |row| {
             let cred_bytes: Vec<u8> = row.get(10)?;
@@ -724,6 +726,52 @@ mod tests {
                 .is_none()
         );
         assert!(token_hash_exists(&conn, &hash).unwrap());
+    }
+
+    #[test]
+    fn api_credentials_auth_lookup_rejects_disabled_user() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::migrations::run(&mut conn).unwrap();
+        let mut nu = NewUser {
+            username: "disabled-dave".into(),
+            name: None,
+            email: None,
+        };
+        nu.validate().unwrap();
+        let user_id =
+            users::insert_human_user(&conn, &nu, UserRole::User, Some("phc"), false).unwrap();
+        let pepper = TokenPepper::new("test-pepper-1234567890abcdef");
+        let secret = generate_api_key().unwrap();
+        let hash = hash_token(&secret, &pepper);
+        let cred_id = ApiCredentialId::new();
+        insert_api_credential(&conn, cred_id, user_id, "cli", &hash, Some("…key")).unwrap();
+
+        // Active user authenticates normally.
+        let found = find_active_user_by_token_hash(&conn, &hash, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.user.id, user_id);
+
+        // Disable the user.
+        users::set_user_disabled(&mut conn, user_id, true).unwrap();
+
+        // Disabled user must NOT authenticate via API credential.
+        assert!(
+            find_active_user_by_token_hash(&conn, &hash, 0)
+                .unwrap()
+                .is_none(),
+            "disabled user must not authenticate via API credential"
+        );
+
+        // Re-enable restores access.
+        users::set_user_disabled(&mut conn, user_id, false).unwrap();
+        assert!(
+            find_active_user_by_token_hash(&conn, &hash, 0)
+                .unwrap()
+                .is_some(),
+            "re-enabled user must authenticate again"
+        );
     }
 
     #[test]

@@ -354,6 +354,10 @@ pub(crate) async fn authenticate_token(
         let hash = hash_token(provided, &mu.pepper);
         match mu.reader.find_active_user_by_token_hash(hash).await {
             Ok(Some(hit)) => {
+                if hit.user.disabled_at.is_some() {
+                    debug!(actor.user = %hit.user.username, "rejecting disabled user via API credential");
+                    return Ok(BearerAuth::Rejected);
+                }
                 debug!(actor.user = %hit.user.username, "authenticated as DB user");
                 let actor = ActorContext {
                     user: Some(hit.user.username.clone()),

@@ -77,22 +77,11 @@ detect_target() {
 # leaves a page of HTML behind.
 download() {
     if command -v curl >/dev/null 2>&1; then
-        if [ "$release_base" = "$DEFAULT_RELEASE_BASE" ]; then
-            curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
-        else
-            curl -fsSL -o "$2" "$1"
-        fi
+        curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
     elif command -v wget >/dev/null 2>&1; then
-        if [ "$release_base" = "$DEFAULT_RELEASE_BASE" ]; then
-            # The curl path's --proto '=https' for wget: no redirect may drop
-            # to plain http. A wget without the flag (BusyBox) cannot promise
-            # that, so it is refused rather than trusted.
-            wget --help 2>&1 | grep -q -- '--https-only' ||
-                die "this wget cannot refuse a redirect to plain http (no --https-only); install curl or GNU wget"
-            wget -q --https-only -O "$2" "$1"
-        else
-            wget -q -O "$2" "$1"
-        fi
+        wget --help 2>&1 | grep -q -- '--https-only' ||
+            die "this wget cannot refuse a redirect to plain http (no --https-only); install curl or GNU wget"
+        wget -q --https-only -O "$2" "$1"
     else
         die "curl or wget is required"
     fi

@@ -49,8 +49,8 @@ function Install-AiMemory {
     }
 
     $base = if ($env:AI_MEMORY_RELEASE_BASE_URL) { $env:AI_MEMORY_RELEASE_BASE_URL.TrimEnd('/') } else { $defaultBase }
-    if ($base -eq $defaultBase -or $base.StartsWith('https://github.com/', [StringComparison]::OrdinalIgnoreCase)) {
-        if (-not $base.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { Fail "refusing a non-https GitHub URL: $base" }
+    if (-not $base.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) {
+        Fail "refusing a non-https release URL: $base; set AI_MEMORY_RELEASE_BASE_URL to an https:// origin"
     }
     $version = $env:AI_MEMORY_VERSION
     if ($version) {
